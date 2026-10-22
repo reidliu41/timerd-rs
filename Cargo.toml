@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "A small foreground/background terminal timer for Linux"
 rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/reidliu41/timer-rs"
+readme = "README.md"
 
 [[bin]]
 name = "timer"
