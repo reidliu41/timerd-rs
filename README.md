@@ -1,5 +1,7 @@
 # timerd-rs
 
+[![crates.io](https://img.shields.io/crates/v/timerd-rs.svg)](https://crates.io/crates/timerd-rs)
+
 `timerd-rs` is a small Linux terminal timer. Its name combines **timer** with
 the Unix convention of using a trailing **d** for a daemon. It installs the
 simple command `timer` and supports both a stopwatch and a countdown. A
@@ -7,6 +9,8 @@ per-user background process owns timer state, so the foreground display can
 detach and attach again without stopping the timer.
 
 ## Install
+
+Install [`timerd-rs` from crates.io](https://crates.io/crates/timerd-rs):
 
 ```bash
 cargo install timerd-rs
