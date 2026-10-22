@@ -1,17 +1,24 @@
-# timer-rs
+# timerd-rs
 
-`timer-rs` is a small Linux terminal timer. It installs one command, `timer`,
-and supports both a stopwatch and a countdown. A per-user background process
-owns timer state, so the foreground display can detach and attach again without
-stopping the timer.
+`timerd-rs` is a small Linux terminal timer. Its name combines **timer** with
+the Unix convention of using a trailing **d** for a daemon. It installs the
+simple command `timer` and supports both a stopwatch and a countdown. A
+per-user background process owns timer state, so the foreground display can
+detach and attach again without stopping the timer.
 
 ## Install
+
+```bash
+cargo install timerd-rs
+```
+
+Or install it from a local checkout:
 
 ```bash
 cargo install --path .
 ```
 
-The Cargo package is named `timer-rs`; the installed executable is named
+The Cargo package is named `timerd-rs`; the installed executable is named
 `timer`.
 
 ## Start a timer
@@ -44,9 +51,9 @@ three-part clock input is `HH:MM:SS`.
 Add a note or start detached:
 
 ```bash
-timer 25m --note "起来活动一下"
-timer 25m -n "起来活动一下" -d
-timer stopwatch -n "编程用时" -d
+timer 25m --note "stretch break"
+timer 25m -n "stretch break" -d
+timer stopwatch -n "coding session" -d
 ```
 
 ## Foreground controls
@@ -124,7 +131,7 @@ created it. If that terminal or SSH session is still open, completion appears
 there as ordinary terminal output:
 
 ```text
-[timer #3] ✓ countdown finished · 起来活动一下
+[timer #3] ✓ countdown finished · stretch break
 ```
 
 This does not depend on a desktop notification service, iTerm2 escape codes,
