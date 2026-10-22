@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
+use crate::display::DisplaySize;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "timer",
@@ -21,6 +23,16 @@ pub struct Cli {
     #[arg(short = 'd', long)]
     pub detach: bool,
 
+    /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
+    #[arg(
+        short = 's',
+        long,
+        value_enum,
+        value_name = "SIZE",
+        conflicts_with = "detach"
+    )]
+    pub size: Option<DisplaySize>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -37,6 +49,16 @@ pub enum Command {
         /// Start detached from the terminal
         #[arg(short = 'd', long)]
         detach: bool,
+
+        /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
+        #[arg(
+            short = 's',
+            long,
+            value_enum,
+            value_name = "SIZE",
+            conflicts_with = "detach"
+        )]
+        size: Option<DisplaySize>,
     },
 
     /// Start a countdown
@@ -53,6 +75,16 @@ pub enum Command {
         /// Start detached from the terminal
         #[arg(short = 'd', long)]
         detach: bool,
+
+        /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
+        #[arg(
+            short = 's',
+            long,
+            value_enum,
+            value_name = "SIZE",
+            conflicts_with = "detach"
+        )]
+        size: Option<DisplaySize>,
     },
 
     /// Attach to the latest detached timer
@@ -60,6 +92,10 @@ pub enum Command {
     Attach {
         /// Timer ID; defaults to the latest detached timer
         id: Option<u64>,
+
+        /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
+        #[arg(short = 's', long, value_enum, value_name = "SIZE")]
+        size: Option<DisplaySize>,
     },
 
     /// List all timers
@@ -89,6 +125,12 @@ pub enum Command {
 
     /// Remove completed, stopped, and cancelled timers
     Clear,
+
+    /// Inspect display configuration
+    Config {
+        #[command(subcommand)]
+        command: ConfigCommand,
+    },
 
     /// Generate shell completion code
     #[command(
@@ -122,6 +164,15 @@ Run `timer completions <SHELL> > FILE` to save generated completion code."#
     Daemon,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ConfigCommand {
+    /// Print the configuration file path
+    Path,
+
+    /// Show the active configuration
+    Show,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,7 +183,11 @@ mod tests {
         assert_eq!(cli.duration.as_deref(), Some("15m"));
         assert!(cli.detach);
         assert_eq!(cli.note.as_deref(), Some("tea"));
+        assert_eq!(cli.size, None);
         assert!(cli.command.is_none());
+
+        let sized = Cli::try_parse_from(["timer", "15m", "-s", "xl"]).unwrap();
+        assert_eq!(sized.size, Some(DisplaySize::Xlarge));
     }
 
     #[test]
@@ -140,19 +195,30 @@ mod tests {
         let full = Cli::try_parse_from(["timer", "attach", "3"]).unwrap();
         assert!(matches!(
             full.command,
-            Some(Command::Attach { id: Some(3) })
+            Some(Command::Attach {
+                id: Some(3),
+                size: None
+            })
         ));
 
         let short = Cli::try_parse_from(["timer", "a"]).unwrap();
-        assert!(matches!(short.command, Some(Command::Attach { id: None })));
+        assert!(matches!(
+            short.command,
+            Some(Command::Attach {
+                id: None,
+                size: None
+            })
+        ));
 
-        let countdown = Cli::try_parse_from(["timer", "cd", "5m", "-d", "-n", "break"]).unwrap();
+        let countdown =
+            Cli::try_parse_from(["timer", "cd", "5m", "-n", "break", "-s", "3"]).unwrap();
         assert!(matches!(
             countdown.command,
             Some(Command::Countdown {
                 duration,
                 note: Some(note),
-                detach: true,
+                detach: false,
+                size: Some(DisplaySize::Large),
             }) if duration == "5m" && note == "break"
         ));
 
@@ -161,6 +227,37 @@ mod tests {
             completions.command,
             Some(Command::Completions { shell: Shell::Fish })
         ));
+    }
+
+    #[test]
+    fn parses_sizes_and_config_commands() {
+        let stopwatch = Cli::try_parse_from(["timer", "sw", "-s", "m"]).unwrap();
+        assert!(matches!(
+            stopwatch.command,
+            Some(Command::Stopwatch {
+                size: Some(DisplaySize::Medium),
+                ..
+            })
+        ));
+
+        let attach = Cli::try_parse_from(["timer", "a", "11", "--size", "xlarge"]).unwrap();
+        assert!(matches!(
+            attach.command,
+            Some(Command::Attach {
+                id: Some(11),
+                size: Some(DisplaySize::Xlarge)
+            })
+        ));
+
+        let config = Cli::try_parse_from(["timer", "config", "show"]).unwrap();
+        assert!(matches!(
+            config.command,
+            Some(Command::Config {
+                command: ConfigCommand::Show
+            })
+        ));
+
+        assert!(Cli::try_parse_from(["timer", "sw", "--detach", "--size", "large"]).is_err());
     }
 
     #[test]

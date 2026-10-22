@@ -56,9 +56,25 @@ timer 25m -n "stretch break" -d
 timer stopwatch -n "coding session" -d
 ```
 
+Choose one of four fixed foreground display sizes:
+
+```bash
+timer sw --size small
+timer sw -s m
+timer 15m -s large
+timer a -s xl
+```
+
+The accepted names are `small`, `medium`, `large`, and `xlarge`. Their short
+values are `s`, `m`, `l`, and `xl`; `1`, `2`, `3`, and `4` are also accepted.
+`small` keeps the original one-line display. Larger sizes use built-in block
+digits and automatically fall back when the terminal is too narrow or short.
+Because a detached timer has no foreground display, `--size` and `--detach`
+cannot be used together; choose a size when attaching instead.
+
 ## Foreground controls
 
-While the compact foreground display is active:
+While the foreground display is active:
 
 | Key | Action |
 | --- | --- |
@@ -67,6 +83,9 @@ While the compact foreground display is active:
 | `Ctrl-B`, then `D` | tmux-style alias for detach |
 | `x` | Stop the stopwatch or cancel the countdown |
 | `Ctrl-C` | Same as `x` |
+| `+` or `=` | Increase the display size |
+| `-` | Decrease the display size |
+| `1`–`4` | Select `small` through `xlarge` directly |
 
 Attach again with the complete command or its short alias:
 
@@ -79,6 +98,32 @@ timer a 3
 
 Without an ID, attach selects the most recently used detached timer. Only one
 foreground client may control a timer at a time.
+
+## Configuration
+
+The built-in default display size is `small`. To change it for future
+foreground displays, create `$XDG_CONFIG_HOME/timerd-rs/config.toml`, or
+`~/.config/timerd-rs/config.toml` when `XDG_CONFIG_HOME` is not set:
+
+```toml
+[display]
+size = "large"
+```
+
+Configuration accepts the full values `small`, `medium`, `large`, and
+`xlarge`. A command-line `--size` value takes precedence over the file, while
+the `+`, `-`, and number keys affect only the current foreground session.
+
+Inspect the path and active value with:
+
+```bash
+timer config path
+timer config show
+```
+
+A missing file is valid and uses `small`; an invalid setting reports its file
+and parse error. The configuration is read by each new foreground invocation,
+so the daemon does not need to restart.
 
 ## Manage timers
 

@@ -7,10 +7,11 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, bail};
 use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
-use crossterm::terminal::{Clear, ClearType, disable_raw_mode, enable_raw_mode};
+use crossterm::terminal::{self, Clear, ClearType, disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 
 use crate::client;
+use crate::display::{DisplaySize, compact_line, render_timer};
 use crate::duration::format_millis;
 use crate::model::{TimerKind, TimerStatus, TimerView};
 use crate::paths::AppPaths;
@@ -100,7 +101,11 @@ pub fn prompt(label: &str) -> Result<String> {
     Ok(value.trim().to_owned())
 }
 
-pub fn run_foreground(paths: &AppPaths, id: Option<u64>) -> Result<()> {
+pub fn run_foreground(
+    paths: &AppPaths,
+    id: Option<u64>,
+    mut display_size: DisplaySize,
+) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("foreground display requires a terminal; start with --detach instead");
     }
@@ -113,19 +118,22 @@ pub fn run_foreground(paths: &AppPaths, id: Option<u64>) -> Result<()> {
         .context("timer daemon did not respond to attach request")??;
     let mut view = snapshot_from_response(first)?;
 
-    let guard = RawTerminal::new(true)?;
-    let mut last_render = String::new();
+    let guard = RawTerminal::new(false)?;
+    let mut drawer = FrameDrawer::default();
+    let mut last_render = Vec::new();
     let mut prefix = false;
 
     loop {
-        let rendered = render_timer(&view);
-        if rendered != last_render {
-            draw_line(&rendered)?;
-            last_render = rendered;
+        let (terminal_width, terminal_height) = terminal::size().unwrap_or((80, 24));
+        let rendered = render_timer(&view, display_size, terminal_width, terminal_height);
+        if rendered.lines != last_render {
+            drawer.draw(&rendered.lines)?;
+            last_render = rendered.lines;
         }
 
         if view.status.is_final() {
             let _ = control.shutdown(std::net::Shutdown::Both);
+            drawer.clear()?;
             drop(guard);
             println!("{}", final_line(&view));
             return Ok(());
@@ -148,6 +156,7 @@ pub fn run_foreground(paths: &AppPaths, id: Option<u64>) -> Result<()> {
 
                 if detach {
                     let _ = control.shutdown(std::net::Shutdown::Both);
+                    drawer.clear()?;
                     drop(guard);
                     println!("{}", detached_line(&view));
                     return Ok(());
@@ -163,6 +172,16 @@ pub fn run_foreground(paths: &AppPaths, id: Option<u64>) -> Result<()> {
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         send_change(paths, Request::Stop { id: Some(view.id) })?;
                     }
+                    KeyCode::Char('+') | KeyCode::Char('=') => {
+                        display_size = display_size.larger();
+                    }
+                    KeyCode::Char('-') | KeyCode::Char('_') => {
+                        display_size = display_size.smaller();
+                    }
+                    KeyCode::Char('1') => display_size = DisplaySize::Small,
+                    KeyCode::Char('2') => display_size = DisplaySize::Medium,
+                    KeyCode::Char('3') => display_size = DisplaySize::Large,
+                    KeyCode::Char('4') => display_size = DisplaySize::Xlarge,
                     _ => {}
                 }
             }
@@ -172,6 +191,7 @@ pub fn run_foreground(paths: &AppPaths, id: Option<u64>) -> Result<()> {
             Ok(message) => view = snapshot_from_response(message?)?,
             Err(mpsc::TryRecvError::Disconnected) => {
                 let _ = control.shutdown(std::net::Shutdown::Both);
+                drawer.clear()?;
                 drop(guard);
                 bail!("lost connection to timer daemon; the timer may still be running");
             }
@@ -213,40 +233,6 @@ fn send_change(paths: &AppPaths, request: Request) -> Result<()> {
     }
 }
 
-fn render_timer(view: &TimerView) -> String {
-    let symbol = match view.status {
-        TimerStatus::Running if view.kind == TimerKind::Stopwatch => "⏱",
-        TimerStatus::Running => "⏳",
-        TimerStatus::Paused => "⏸",
-        TimerStatus::Done => "✓",
-        TimerStatus::Stopped | TimerStatus::Cancelled => "×",
-    };
-    let round_up = view.kind == TimerKind::Countdown && view.status.is_active();
-    let note = view
-        .note
-        .as_deref()
-        .map(|note| format!(" · {note}"))
-        .unwrap_or_default();
-    let paused = if view.status == TimerStatus::Paused {
-        " · paused"
-    } else {
-        ""
-    };
-    format!(
-        "{symbol} {}{note}{paused}  [#{}]",
-        format_millis(view.value_millis, round_up),
-        view.id
-    )
-}
-
-fn draw_line(line: &str) -> Result<()> {
-    let mut stdout = io::stdout();
-    queue!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
-    write!(stdout, "{line}")?;
-    stdout.flush()?;
-    Ok(())
-}
-
 fn final_line(view: &TimerView) -> String {
     let note = view
         .note
@@ -261,7 +247,7 @@ fn final_line(view: &TimerView) -> String {
             format_millis(view.value_millis, false)
         ),
         TimerStatus::Cancelled => format!("× Timer #{} cancelled{note}", view.id),
-        _ => render_timer(view),
+        _ => compact_line(view),
     }
 }
 
@@ -281,6 +267,59 @@ fn is_control_b(key: KeyEvent) -> bool {
 
 struct RawTerminal {
     clear_on_drop: bool,
+}
+
+#[derive(Default)]
+struct FrameDrawer {
+    lines: usize,
+}
+
+impl FrameDrawer {
+    fn draw(&mut self, lines: &[String]) -> Result<()> {
+        self.clear()?;
+        let mut stdout = io::stdout();
+        for (index, line) in lines.iter().enumerate() {
+            queue!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            write!(stdout, "{line}")?;
+            if index + 1 < lines.len() {
+                write!(stdout, "\r\n")?;
+            }
+        }
+        stdout.flush()?;
+        self.lines = lines.len();
+        Ok(())
+    }
+
+    fn clear(&mut self) -> Result<()> {
+        if self.lines == 0 {
+            return Ok(());
+        }
+
+        let mut stdout = io::stdout();
+        queue!(stdout, MoveToColumn(0))?;
+        if self.lines > 1 {
+            queue!(stdout, MoveUp((self.lines - 1) as u16))?;
+        }
+        for index in 0..self.lines {
+            queue!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))?;
+            if index + 1 < self.lines {
+                write!(stdout, "\r\n")?;
+            }
+        }
+        if self.lines > 1 {
+            queue!(stdout, MoveUp((self.lines - 1) as u16))?;
+        }
+        queue!(stdout, MoveToColumn(0))?;
+        stdout.flush()?;
+        self.lines = 0;
+        Ok(())
+    }
+}
+
+impl Drop for FrameDrawer {
+    fn drop(&mut self) {
+        let _ = self.clear();
+    }
 }
 
 impl RawTerminal {

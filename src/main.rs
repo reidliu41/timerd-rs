@@ -1,6 +1,8 @@
 mod cli;
 mod client;
+mod config;
 mod daemon;
+mod display;
 mod duration;
 mod model;
 mod paths;
@@ -11,7 +13,8 @@ use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 
-use crate::cli::{Cli, Command};
+use crate::cli::{Cli, Command, ConfigCommand};
+use crate::display::DisplaySize;
 use crate::duration::{format_millis, parse_duration};
 use crate::model::{TimerKind, TimerView};
 use crate::paths::AppPaths;
@@ -32,23 +35,34 @@ fn run() -> Result<()> {
     }
 
     match cli.command {
-        Some(Command::Stopwatch { note, detach }) => {
+        Some(Command::Stopwatch { note, detach, size }) => {
+            let size = resolve_display_size(size)?;
             let paths = AppPaths::discover()?;
-            create_timer(&paths, TimerKind::Stopwatch, None, note, detach)
+            create_timer(&paths, TimerKind::Stopwatch, None, note, detach, size)
         }
         Some(Command::Countdown {
             duration,
             note,
             detach,
+            size,
         }) => {
             let duration = parse_duration(&duration)?;
+            let size = resolve_display_size(size)?;
             let paths = AppPaths::discover()?;
-            create_timer(&paths, TimerKind::Countdown, Some(duration), note, detach)
+            create_timer(
+                &paths,
+                TimerKind::Countdown,
+                Some(duration),
+                note,
+                detach,
+                size,
+            )
         }
-        Some(Command::Attach { id }) => {
+        Some(Command::Attach { id, size }) => {
+            let size = resolve_display_size(size)?;
             let paths = AppPaths::discover()?;
             daemon::ensure_running(&paths)?;
-            ui::run_foreground(&paths, id)
+            ui::run_foreground(&paths, id, size)
         }
         Some(Command::List) => {
             let paths = AppPaths::discover()?;
@@ -81,6 +95,13 @@ fn run() -> Result<()> {
                 _ => bail!("unexpected response from timer daemon"),
             }
         }
+        Some(Command::Config { command }) => match command {
+            ConfigCommand::Path => {
+                println!("{}", config::path()?.display());
+                Ok(())
+            }
+            ConfigCommand::Show => show_config(),
+        },
         Some(Command::Completions { shell }) => {
             let mut command = Cli::command();
             generate(shell, &mut command, "timer", &mut std::io::stdout());
@@ -99,6 +120,7 @@ fn run() -> Result<()> {
         }
         Some(Command::Daemon) => unreachable!(),
         None => {
+            let size = resolve_display_size(cli.size)?;
             if let Some(duration) = cli.duration {
                 let duration = parse_duration(&duration)?;
                 let paths = AppPaths::discover()?;
@@ -108,14 +130,15 @@ fn run() -> Result<()> {
                     Some(duration),
                     cli.note,
                     cli.detach,
+                    size,
                 );
             }
-            interactive_create(cli.note, cli.detach)
+            interactive_create(cli.note, cli.detach, size)
         }
     }
 }
 
-fn interactive_create(note: Option<String>, detach: bool) -> Result<()> {
+fn interactive_create(note: Option<String>, detach: bool, size: DisplaySize) -> Result<()> {
     let kind = ui::choose_timer_kind()?;
     let duration = if kind == TimerKind::Countdown {
         let input = ui::prompt("Duration [s/m/h] (e.g. 15s, 5m, 1h30m, 00:15:00): ")?;
@@ -131,7 +154,7 @@ fn interactive_create(note: Option<String>, detach: bool) -> Result<()> {
         }
     };
     let paths = AppPaths::discover()?;
-    create_timer(&paths, kind, duration, note, detach)
+    create_timer(&paths, kind, duration, note, detach, size)
 }
 
 fn create_timer(
@@ -140,6 +163,7 @@ fn create_timer(
     duration_millis: Option<u64>,
     note: Option<String>,
     detach: bool,
+    size: DisplaySize,
 ) -> Result<()> {
     daemon::ensure_running(paths)?;
     let response = client::expect_response(client::request(
@@ -174,7 +198,29 @@ fn create_timer(
         return Ok(());
     }
 
-    ui::run_foreground(paths, Some(task.id))
+    ui::run_foreground(paths, Some(task.id), size)
+}
+
+fn resolve_display_size(override_size: Option<DisplaySize>) -> Result<DisplaySize> {
+    match override_size {
+        Some(size) => Ok(size),
+        None => Ok(config::load()?.display_size),
+    }
+}
+
+fn show_config() -> Result<()> {
+    let loaded = config::load()?;
+    if loaded.exists {
+        println!("Config: {}", loaded.path.display());
+    } else {
+        println!(
+            "Config: {} (not found; using defaults)",
+            loaded.path.display()
+        );
+    }
+    println!("[display]");
+    println!("size = \"{}\"", loaded.display_size);
+    Ok(())
 }
 
 fn list_timers(paths: &AppPaths) -> Result<()> {
