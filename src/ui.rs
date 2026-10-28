@@ -2,7 +2,7 @@ use std::io::{self, BufRead, BufReader, IsTerminal, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use crossterm::cursor::{Hide, MoveToColumn, MoveUp, Show};
@@ -16,6 +16,7 @@ use crate::duration::format_millis;
 use crate::model::{TimerKind, TimerStatus, TimerView};
 use crate::paths::AppPaths;
 use crate::protocol::{Request, Response};
+use crate::theme::ThemeSession;
 
 pub fn choose_timer_kind() -> Result<TimerKind> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
@@ -105,6 +106,7 @@ pub fn run_foreground(
     paths: &AppPaths,
     id: Option<u64>,
     mut display_size: DisplaySize,
+    mut theme: Option<ThemeSession>,
 ) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("foreground display requires a terminal; start with --detach instead");
@@ -122,16 +124,34 @@ pub fn run_foreground(
     let mut drawer = FrameDrawer::default();
     let mut last_render = Vec::new();
     let mut prefix = false;
+    let mut final_started = None;
 
     loop {
         let (terminal_width, terminal_height) = terminal::size().unwrap_or((80, 24));
-        let rendered = render_timer(&view, display_size, terminal_width, terminal_height);
-        if rendered.lines != last_render {
-            drawer.draw(&rendered.lines)?;
-            last_render = rendered.lines;
+        let lines = render_with_theme(
+            &view,
+            display_size,
+            terminal_width,
+            terminal_height,
+            theme.as_mut(),
+        );
+        if lines != last_render {
+            drawer.draw(&lines)?;
+            last_render = lines;
         }
 
         if view.status.is_final() {
+            let started = final_started.get_or_insert_with(Instant::now);
+            let hold = theme
+                .as_ref()
+                .map(|theme| theme.completion_hold(view.status))
+                .unwrap_or_default();
+            if started.elapsed() < hold {
+                if event::poll(Duration::from_millis(50))? {
+                    let _ = event::read()?;
+                }
+                continue;
+            }
             let _ = control.shutdown(std::net::Shutdown::Both);
             drawer.clear()?;
             drop(guard);
@@ -141,6 +161,13 @@ pub fn run_foreground(
 
         while let Ok(message) = receiver.try_recv() {
             view = snapshot_from_response(message?)?;
+        }
+
+        // The daemon closes an attach stream after sending the final snapshot.
+        // Render that snapshot (including any theme completion frames) before
+        // treating a closed stream as an unexpected disconnect below.
+        if view.status.is_final() {
+            continue;
         }
 
         if event::poll(Duration::from_millis(50))? {
@@ -182,6 +209,16 @@ pub fn run_foreground(
                     KeyCode::Char('2') => display_size = DisplaySize::Medium,
                     KeyCode::Char('3') => display_size = DisplaySize::Large,
                     KeyCode::Char('4') => display_size = DisplaySize::Xlarge,
+                    KeyCode::Char(']') => {
+                        if let Some(theme) = &mut theme {
+                            theme.next();
+                        }
+                    }
+                    KeyCode::Char('[') => {
+                        if let Some(theme) = &mut theme {
+                            theme.previous();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -198,6 +235,93 @@ pub fn run_foreground(
             Err(mpsc::TryRecvError::Empty) => {}
         }
     }
+}
+
+pub fn preview_theme(mut theme: ThemeSession) -> Result<()> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        bail!("theme preview requires a terminal");
+    }
+
+    let guard = RawTerminal::new(false)?;
+    let mut drawer = FrameDrawer::default();
+    let mut last_render = Vec::new();
+
+    loop {
+        let (terminal_width, terminal_height) = terminal::size().unwrap_or((80, 24));
+        let width = usize::from(terminal_width.max(1));
+        let mut lines = theme.render(TimerStatus::Running, width);
+        let label = format!(
+            "Theme: {}  |  [ previous  ] next  |  q exit",
+            theme.current_name()
+        );
+        if !lines.is_empty() {
+            lines.push(String::new());
+        }
+        lines.push(center_line(&label, width));
+        lines.truncate(usize::from(terminal_height.max(1)));
+        if lines != last_render {
+            drawer.draw(&lines)?;
+            last_render = lines;
+        }
+
+        if event::poll(Duration::from_millis(50))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Char('q') | KeyCode::Esc => break,
+                    KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break,
+                    KeyCode::Char(']') => theme.next(),
+                    KeyCode::Char('[') => theme.previous(),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    drawer.clear()?;
+    drop(guard);
+    Ok(())
+}
+
+fn render_with_theme(
+    view: &TimerView,
+    display_size: DisplaySize,
+    terminal_width: u16,
+    terminal_height: u16,
+    theme: Option<&mut ThemeSession>,
+) -> Vec<String> {
+    let mut rendered = render_timer(view, display_size, terminal_width, terminal_height);
+    let Some(theme) = theme else {
+        return rendered.lines;
+    };
+    let art = theme.render(view.status, usize::from(terminal_width.max(1)));
+    if art.is_empty() {
+        return rendered.lines;
+    }
+
+    let extra_height = art.len().saturating_add(1);
+    let total_height = usize::from(terminal_height.max(1));
+    if rendered.lines.len().saturating_add(extra_height) > total_height {
+        let timer_height = total_height.saturating_sub(extra_height).max(1);
+        rendered = render_timer(
+            view,
+            display_size,
+            terminal_width,
+            u16::try_from(timer_height).unwrap_or(u16::MAX),
+        );
+    }
+    if rendered.lines.len().saturating_add(extra_height) <= total_height {
+        rendered.lines.push(String::new());
+        rendered.lines.extend(art);
+    }
+    rendered.lines
+}
+
+fn center_line(value: &str, width: usize) -> String {
+    let length = value.chars().count();
+    if length >= width {
+        return value.chars().take(width).collect();
+    }
+    format!("{}{}", " ".repeat((width - length) / 2), value)
 }
 
 fn response_reader(stream: UnixStream) -> Receiver<Result<Response>> {
@@ -343,5 +467,24 @@ impl Drop for RawTerminal {
             let _ = execute!(io::stdout(), Show);
         }
         let _ = disable_raw_mode();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_theme_keeps_the_original_rendering() {
+        let view = TimerView {
+            id: 11,
+            kind: TimerKind::Stopwatch,
+            status: TimerStatus::Running,
+            note: None,
+            value_millis: 12_000,
+        };
+        let original = render_timer(&view, DisplaySize::Medium, 120, 40).lines;
+        let optional = render_with_theme(&view, DisplaySize::Medium, 120, 40, None);
+        assert_eq!(optional, original);
     }
 }

@@ -76,6 +76,79 @@ digits and automatically fall back when the terminal is too narrow or short.
 Because a detached timer has no foreground display, `--size` and `--detach`
 cannot be used together; choose a size when attaching instead.
 
+## Animated themes
+
+Themes are optional. Without `-t`/`--theme`, the foreground display remains
+the same plain timer as before. Enable the bundled `sleepy-cat` theme when
+starting or attaching to a timer:
+
+```bash
+timer 25m -s m -t sleepy-cat
+timer sw --theme sleepy-cat
+timer a --theme sleepy-cat
+```
+
+Discover, preview, and validate themes with:
+
+```bash
+timer theme list
+timer theme preview sleepy-cat
+timer theme check ./my-cat.toml
+timer theme path
+```
+
+During a themed foreground session, press `]` for the next discovered theme
+or `[` for the previous one. The cycle includes `none`, which hides the art
+without stopping the timer. These keys only become active when the session was
+started or attached with a theme option.
+
+User themes are loaded automatically from
+`$XDG_CONFIG_HOME/timerd-rs/themes`, or `~/.config/timerd-rs/themes` when
+`XDG_CONFIG_HOME` is not set. The filename is the theme name, so a file named
+`my-cat.toml` is selected with `timer 5m -t my-cat`. A theme needs at least one
+running frame; paused and done frames are optional:
+
+```toml
+version = 1
+name = "My Cat"
+fps = 4
+align = "center"
+
+[[running]]
+art = """
+   /\___/\
+  (  o o  )
+  (   ^   )
+"""
+
+[[running]]
+art = """
+   /\___/\
+  (  - -  )
+  (   ^   )
+"""
+
+[[paused]]
+art = """
+   /\___/\
+  (  z z  )
+  (   ^   )
+"""
+
+[[done]]
+art = """
+   \  |  /
+    \(^)/
+     / \
+"""
+```
+
+Each `art` opening and closing `"""` must be on its own line. Theme art is
+printable ASCII data only: terminal control characters are rejected, and frame
+counts and dimensions are bounded. To contribute a bundled theme, add one TOML
+file to the repository's [`themes`](./themes) directory; the build script discovers
+and embeds it automatically, with no Rust registration table to edit.
+
 ## Foreground controls
 
 While the foreground display is active:
@@ -90,6 +163,7 @@ While the foreground display is active:
 | `+` or `=` | Increase the display size |
 | `-` | Decrease the display size |
 | `1`–`4` | Select `small` through `xlarge` directly |
+| `[` / `]` | Previous / next theme, including `none` (themed sessions only) |
 
 Attach again with the complete command or its short alias:
 
@@ -171,7 +245,9 @@ autoload -Uz compinit && compinit
 ```
 
 Elvish and PowerShell are also supported. Generated completions cover commands,
-aliases, options, and shell names.
+aliases, options, shell names, and bundled theme names. User-installed theme
+names remain free-form. Regenerate the completion file after an upgrade so
+newly added options and bundled themes are included.
 
 ## Countdown completion
 

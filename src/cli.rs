@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
@@ -33,6 +35,17 @@ pub struct Cli {
     )]
     pub size: Option<DisplaySize>,
 
+    /// Animated foreground theme; run `timer theme list` to see names
+    #[arg(
+        short = 't',
+        long,
+        value_name = "THEME",
+        value_parser = crate::theme::ThemeNameParser,
+        hide_possible_values = true,
+        conflicts_with = "detach"
+    )]
+    pub theme: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
@@ -59,6 +72,17 @@ pub enum Command {
             conflicts_with = "detach"
         )]
         size: Option<DisplaySize>,
+
+        /// Animated foreground theme; run `timer theme list` to see names
+        #[arg(
+            short = 't',
+            long,
+            value_name = "THEME",
+            value_parser = crate::theme::ThemeNameParser,
+            hide_possible_values = true,
+            conflicts_with = "detach"
+        )]
+        theme: Option<String>,
     },
 
     /// Start a countdown
@@ -85,6 +109,17 @@ pub enum Command {
             conflicts_with = "detach"
         )]
         size: Option<DisplaySize>,
+
+        /// Animated foreground theme; run `timer theme list` to see names
+        #[arg(
+            short = 't',
+            long,
+            value_name = "THEME",
+            value_parser = crate::theme::ThemeNameParser,
+            hide_possible_values = true,
+            conflicts_with = "detach"
+        )]
+        theme: Option<String>,
     },
 
     /// Attach to the latest detached timer
@@ -96,6 +131,16 @@ pub enum Command {
         /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
         #[arg(short = 's', long, value_enum, value_name = "SIZE")]
         size: Option<DisplaySize>,
+
+        /// Animated foreground theme; run `timer theme list` to see names
+        #[arg(
+            short = 't',
+            long,
+            value_name = "THEME",
+            value_parser = crate::theme::ThemeNameParser,
+            hide_possible_values = true
+        )]
+        theme: Option<String>,
     },
 
     /// List all timers
@@ -130,6 +175,13 @@ pub enum Command {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+
+    /// List, preview, and validate animated themes
+    #[command(visible_alias = "themes")]
+    Theme {
+        #[command(subcommand)]
+        command: ThemeCommand,
     },
 
     /// Generate shell completion code
@@ -173,6 +225,32 @@ pub enum ConfigCommand {
     Show,
 }
 
+#[derive(Debug, Subcommand)]
+pub enum ThemeCommand {
+    /// List built-in and user-installed themes
+    List,
+
+    /// Preview a theme; press q or Esc to exit
+    Preview {
+        /// Theme name shown by `timer theme list`
+        #[arg(
+            value_parser = crate::theme::ThemeNameParser,
+            hide_possible_values = true
+        )]
+        name: String,
+    },
+
+    /// Validate a theme file without installing it
+    Check {
+        /// Path to a theme TOML file
+        #[arg(value_hint = clap::ValueHint::FilePath)]
+        file: PathBuf,
+    },
+
+    /// Print the directory scanned for user themes
+    Path,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,10 +262,15 @@ mod tests {
         assert!(cli.detach);
         assert_eq!(cli.note.as_deref(), Some("tea"));
         assert_eq!(cli.size, None);
+        assert_eq!(cli.theme, None);
         assert!(cli.command.is_none());
 
-        let sized = Cli::try_parse_from(["timer", "15m", "-s", "xl"]).unwrap();
+        let sized = Cli::try_parse_from(["timer", "15m", "-s", "xl", "-t", "sleepy-cat"]).unwrap();
         assert_eq!(sized.size, Some(DisplaySize::Xlarge));
+        assert_eq!(sized.theme.as_deref(), Some("sleepy-cat"));
+
+        let custom = Cli::try_parse_from(["timer", "15m", "-t", "my-own-theme"]).unwrap();
+        assert_eq!(custom.theme.as_deref(), Some("my-own-theme"));
     }
 
     #[test]
@@ -197,7 +280,8 @@ mod tests {
             full.command,
             Some(Command::Attach {
                 id: Some(3),
-                size: None
+                size: None,
+                theme: None
             })
         ));
 
@@ -206,7 +290,8 @@ mod tests {
             short.command,
             Some(Command::Attach {
                 id: None,
-                size: None
+                size: None,
+                theme: None
             })
         ));
 
@@ -219,6 +304,7 @@ mod tests {
                 note: Some(note),
                 detach: false,
                 size: Some(DisplaySize::Large),
+                theme: None,
             }) if duration == "5m" && note == "break"
         ));
 
@@ -236,17 +322,44 @@ mod tests {
             stopwatch.command,
             Some(Command::Stopwatch {
                 size: Some(DisplaySize::Medium),
+                theme: None,
                 ..
             })
         ));
 
-        let attach = Cli::try_parse_from(["timer", "a", "11", "--size", "xlarge"]).unwrap();
+        let attach = Cli::try_parse_from([
+            "timer",
+            "a",
+            "11",
+            "--size",
+            "xlarge",
+            "--theme",
+            "sleepy-cat",
+        ])
+        .unwrap();
         assert!(matches!(
             attach.command,
             Some(Command::Attach {
                 id: Some(11),
-                size: Some(DisplaySize::Xlarge)
-            })
+                size: Some(DisplaySize::Xlarge),
+                theme: Some(theme),
+            }) if theme == "sleepy-cat"
+        ));
+
+        let theme = Cli::try_parse_from(["timer", "theme", "preview", "sleepy-cat"]).unwrap();
+        assert!(matches!(
+            theme.command,
+            Some(Command::Theme {
+                command: ThemeCommand::Preview { name }
+            }) if name == "sleepy-cat"
+        ));
+
+        let check = Cli::try_parse_from(["timer", "themes", "check", "cat.toml"]).unwrap();
+        assert!(matches!(
+            check.command,
+            Some(Command::Theme {
+                command: ThemeCommand::Check { file }
+            }) if file == std::path::Path::new("cat.toml")
         ));
 
         let config = Cli::try_parse_from(["timer", "config", "show"]).unwrap();
@@ -258,6 +371,7 @@ mod tests {
         ));
 
         assert!(Cli::try_parse_from(["timer", "sw", "--detach", "--size", "large"]).is_err());
+        assert!(Cli::try_parse_from(["timer", "sw", "--detach", "--theme", "sleepy-cat"]).is_err());
     }
 
     #[test]

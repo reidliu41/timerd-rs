@@ -1,0 +1,32 @@
+version = 1
+name = "Sleepy Cat"
+fps = 4
+align = "center"
+
+[[running]]
+art = """
+   /\___/\
+  (  o o  )
+  (   ^   )
+"""
+
+[[running]]
+art = """
+   /\___/\
+  (  - -  )
+  (   ^   )
+"""
+
+[[paused]]
+art = """
+   /\___/\
+  (  z z  )
+  (   ^   )
+"""
+
+[[done]]
+art = """
+   \  |  /
+    \(^)/
+     / \
+"""
