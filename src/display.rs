@@ -2,6 +2,7 @@ use std::fmt;
 
 use clap::ValueEnum;
 
+use crate::alarm::format_alarm_clock;
 use crate::duration::format_millis;
 use crate::model::{TimerKind, TimerStatus, TimerView};
 
@@ -100,9 +101,15 @@ pub fn render_timer(
     } else {
         format!("{effective_size}; requested {requested_size}")
     };
-    lines.push(format!(
-        "Space pause | d detach | x stop | +/- size ({size_description})"
-    ));
+    if view.kind == TimerKind::Alarm {
+        lines.push(format!(
+            "d detach | x cancel | +/- size ({size_description})"
+        ));
+    } else {
+        lines.push(format!(
+            "Space pause | d detach | x stop | +/- size ({size_description})"
+        ));
+    }
 
     RenderedFrame {
         lines: lines
@@ -116,12 +123,13 @@ pub fn render_timer(
 pub fn compact_line(view: &TimerView) -> String {
     let symbol = match view.status {
         TimerStatus::Running if view.kind == TimerKind::Stopwatch => "⏱",
+        TimerStatus::Running if view.kind == TimerKind::Alarm => "⏰",
         TimerStatus::Running => "⏳",
         TimerStatus::Paused => "⏸",
         TimerStatus::Done => "✓",
         TimerStatus::Stopped | TimerStatus::Cancelled => "×",
     };
-    let round_up = view.kind == TimerKind::Countdown && view.status.is_active();
+    let round_up = view.kind.counts_down() && view.status.is_active();
     let note = view
         .note
         .as_deref()
@@ -132,15 +140,27 @@ pub fn compact_line(view: &TimerView) -> String {
     } else {
         ""
     };
-    format!(
-        "{symbol} {}{note}{paused}  [#{}]",
-        format_millis(view.value_millis, round_up),
-        view.id
-    )
+    if view.kind == TimerKind::Alarm {
+        let target = view
+            .target_at_millis
+            .map(format_alarm_clock)
+            .unwrap_or_else(|| "unknown time".to_owned());
+        format!(
+            "{symbol} {}  [#{}]  at {target}{note}",
+            format_millis(view.value_millis, round_up),
+            view.id
+        )
+    } else {
+        format!(
+            "{symbol} {}{note}{paused}  [#{}]",
+            format_millis(view.value_millis, round_up),
+            view.id
+        )
+    }
 }
 
 fn render_digits(view: &TimerView, size: DisplaySize) -> Vec<String> {
-    let round_up = view.kind == TimerKind::Countdown && view.status.is_active();
+    let round_up = view.kind.counts_down() && view.status.is_active();
     let time = format_millis(view.value_millis, round_up).to_string();
     let (font, scale) = match size {
         DisplaySize::Medium => (Font::Medium, 1),
@@ -157,12 +177,24 @@ fn metadata_line(view: &TimerView) -> String {
         .as_deref()
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
-    format!(
-        "{} #{} · {}{note}",
-        view.kind.as_str(),
-        view.id,
-        view.status.as_str()
-    )
+    if view.kind == TimerKind::Alarm {
+        let target = view
+            .target_at_millis
+            .map(format_alarm_clock)
+            .unwrap_or_else(|| "unknown time".to_owned());
+        format!(
+            "alarm #{} · at {target} · {}{note}",
+            view.id,
+            view.status.as_str()
+        )
+    } else {
+        format!(
+            "{} #{} · {}{note}",
+            view.kind.as_str(),
+            view.id,
+            view.status.as_str()
+        )
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -260,6 +292,7 @@ mod tests {
             status: TimerStatus::Running,
             note: None,
             value_millis: 12_000,
+            target_at_millis: None,
         }
     }
 
@@ -311,5 +344,26 @@ mod tests {
         let tiny = render_timer(&view(), DisplaySize::Large, 20, 4);
         assert_eq!(tiny.effective_size, DisplaySize::Small);
         assert_eq!(tiny.lines.len(), 1);
+    }
+
+    #[test]
+    fn alarm_has_target_metadata_and_no_pause_control() {
+        let alarm = TimerView {
+            id: 12,
+            kind: TimerKind::Alarm,
+            status: TimerStatus::Running,
+            note: Some("breakfast".to_owned()),
+            value_millis: 24 * 60 * 1_000,
+            target_at_millis: Some(1_798_000_000_000),
+        };
+        let small = render_timer(&alarm, DisplaySize::Small, 120, 40);
+        assert!(small.lines[0].contains("⏰"));
+        assert!(small.lines[0].contains("at "));
+        assert!(small.lines[0].contains("breakfast"));
+
+        let medium = render_timer(&alarm, DisplaySize::Medium, 120, 40);
+        assert!(medium.lines.iter().any(|line| line.contains("alarm #12")));
+        assert!(medium.lines.iter().any(|line| line.contains("x cancel")));
+        assert!(!medium.lines.iter().any(|line| line.contains("pause")));
     }
 }

@@ -4,9 +4,9 @@
 
 `timerd-rs` is a small Linux terminal timer. Its name combines **timer** with
 the Unix convention of using a trailing **d** for a daemon. It installs the
-simple command `timer` and supports both a stopwatch and a countdown. A
-per-user background process owns timer state, so the foreground display can
-detach and attach again without stopping the timer.
+simple command `timer` and supports a stopwatch, a countdown, and one-time
+wall-clock alarms. A per-user background process owns timer state, so the
+foreground display can detach and attach again without stopping the timer.
 
 ## Install
 
@@ -59,6 +59,37 @@ timer 25m --note "stretch break"
 timer 25m -n "stretch break" -d
 timer stopwatch -n "coding session" -d
 ```
+
+## Schedule an alarm
+
+Use `at` to schedule a one-time reminder at a local clock time. `alarm` is a
+readable alias for the same command:
+
+```bash
+timer at 08:00 -n "eat breakfast"
+timer at 08:00:30 -n "join the call" -d
+timer at "2030-10-30 18:45" -n "leave for the airport" -d
+timer alarm 20:00 -n "take medicine"
+```
+
+Accepted inputs are `HH:MM`, `HH:MM:SS`, `YYYY-MM-DD HH:MM`, and
+`YYYY-MM-DD HH:MM:SS`. A clock time such as `08:00` means the next occurrence:
+today when it is still ahead, otherwise tomorrow. An explicit date must be in
+the future. All inputs use the machine's local timezone.
+
+In the foreground, the large value is the remaining time while the target and
+description stay fixed:
+
+```text
+                 00:24:37
+       alarm #12 · at 08:00 · running · eat breakfast
+            d detach | x cancel | +/- size (medium)
+```
+
+Alarms are tied to an absolute time and therefore cannot be paused or resumed.
+They can be detached, attached, listed, or cancelled like other timers. This
+release schedules one occurrence only; it does not create a daily repeating
+alarm.
 
 Choose one of four fixed foreground display sizes:
 
@@ -209,9 +240,9 @@ Every frequent command has a readable name and a short alias:
 
 ```bash
 timer list             # alias: timer ls
-timer pause [ID]       # alias: timer p [ID]
+timer pause [ID]       # alias: timer p [ID]; stopwatch/countdown only
 timer resume [ID]      # alias: timer r [ID]
-timer stop [ID]        # alias: timer x [ID]
+timer stop [ID]        # alias: timer x [ID]; also cancels an alarm
 timer clear
 ```
 
@@ -249,7 +280,7 @@ aliases, options, shell names, and bundled theme names. User-installed theme
 names remain free-form. Regenerate the completion file after an upgrade so
 newly added options and bundled themes are included.
 
-## Countdown completion
+## Countdown and alarm completion
 
 For a detached countdown, the daemon keeps a write handle to the terminal that
 created it. If that terminal or SSH session is still open, completion appears
@@ -263,6 +294,13 @@ This does not depend on a desktop notification service, iTerm2 escape codes,
 tmux, or screen. If the original terminal has closed, the write is allowed to
 fail and the timer still becomes `done`. Its result remains visible in
 `timer list`.
+
+A detached alarm uses the same terminal-session mechanism and includes its
+target clock and description:
+
+```text
+[timer #12] ⏰ 08:00 · eat breakfast
+```
 
 An asynchronous completion line can visually interrupt text currently being
 typed at the shell prompt. The typed input remains owned by the shell, but a

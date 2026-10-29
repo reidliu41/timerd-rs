@@ -10,6 +10,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyModifiers};
 use crossterm::terminal::{self, Clear, ClearType, disable_raw_mode, enable_raw_mode};
 use crossterm::{execute, queue};
 
+use crate::alarm::{format_alarm_clock, format_alarm_target};
 use crate::client;
 use crate::display::{DisplaySize, compact_line, render_timer};
 use crate::duration::format_millis;
@@ -191,7 +192,9 @@ pub fn run_foreground(
 
                 match key.code {
                     KeyCode::Char(' ') => {
-                        send_change(paths, Request::Toggle { id: view.id })?;
+                        if view.kind != TimerKind::Alarm {
+                            send_change(paths, Request::Toggle { id: view.id })?;
+                        }
                     }
                     KeyCode::Char('x') => {
                         send_change(paths, Request::Stop { id: Some(view.id) })?;
@@ -363,26 +366,49 @@ fn final_line(view: &TimerView) -> String {
         .as_deref()
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
-    match view.status {
-        TimerStatus::Done => format!("✓ Timer #{} finished{note}", view.id),
-        TimerStatus::Stopped => format!(
+    match (view.kind, view.status) {
+        (TimerKind::Alarm, TimerStatus::Done) => {
+            let target = view
+                .target_at_millis
+                .map(format_alarm_clock)
+                .unwrap_or_else(|| "scheduled time".to_owned());
+            format!("⏰ Alarm #{} · {target}{note}", view.id)
+        }
+        (_, TimerStatus::Done) => format!("✓ Timer #{} finished{note}", view.id),
+        (_, TimerStatus::Stopped) => format!(
             "■ Timer #{} stopped at {}{note}",
             view.id,
             format_millis(view.value_millis, false)
         ),
-        TimerStatus::Cancelled => format!("× Timer #{} cancelled{note}", view.id),
+        (_, TimerStatus::Cancelled) => format!("× Timer #{} cancelled{note}", view.id),
         _ => compact_line(view),
     }
 }
 
 fn detached_line(view: &TimerView) -> String {
-    let round_up = view.kind == TimerKind::Countdown;
-    format!(
-        "[{}] detached · {} {}",
-        view.id,
-        format_millis(view.value_millis, round_up),
-        view.status.as_str()
-    )
+    if view.kind == TimerKind::Alarm {
+        let target = view
+            .target_at_millis
+            .map(format_alarm_target)
+            .unwrap_or_else(|| "unknown time".to_owned());
+        let note = view
+            .note
+            .as_deref()
+            .map(|note| format!(" · {note}"))
+            .unwrap_or_default();
+        format!(
+            "[{}] alarm scheduled · {target} · {} remaining · detached{note}",
+            view.id,
+            format_millis(view.value_millis, true)
+        )
+    } else {
+        format!(
+            "[{}] detached · {} {}",
+            view.id,
+            format_millis(view.value_millis, view.kind.counts_down()),
+            view.status.as_str()
+        )
+    }
 }
 
 fn is_control_b(key: KeyEvent) -> bool {
@@ -482,6 +508,7 @@ mod tests {
             status: TimerStatus::Running,
             note: None,
             value_millis: 12_000,
+            target_at_millis: None,
         };
         let original = render_timer(&view, DisplaySize::Medium, 120, 40).lines;
         let optional = render_with_theme(&view, DisplaySize::Medium, 120, 40, None);

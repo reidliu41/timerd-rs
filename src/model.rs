@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum TimerKind {
     Stopwatch,
     Countdown,
+    Alarm,
 }
 
 impl TimerKind {
@@ -14,7 +15,12 @@ impl TimerKind {
         match self {
             Self::Stopwatch => "stopwatch",
             Self::Countdown => "countdown",
+            Self::Alarm => "alarm",
         }
+    }
+
+    pub fn counts_down(self) -> bool {
+        matches!(self, Self::Countdown | Self::Alarm)
     }
 }
 
@@ -55,6 +61,8 @@ pub struct TimerTask {
     pub status: TimerStatus,
     pub note: Option<String>,
     pub duration_millis: Option<u64>,
+    #[serde(default)]
+    pub target_at_millis: Option<u64>,
     pub accumulated_millis: u64,
     pub run_started_at_millis: Option<u64>,
     pub created_at_millis: u64,
@@ -76,8 +84,25 @@ impl TimerTask {
             status: TimerStatus::Running,
             note: note.filter(|note| !note.trim().is_empty()),
             duration_millis,
+            target_at_millis: None,
             accumulated_millis: 0,
             run_started_at_millis: Some(now),
+            created_at_millis: now,
+            last_touched_at_millis: now,
+            finished_at_millis: None,
+        }
+    }
+
+    pub fn new_alarm(id: u64, target_at_millis: u64, note: Option<String>, now: u64) -> Self {
+        Self {
+            id,
+            kind: TimerKind::Alarm,
+            status: TimerStatus::Running,
+            note: note.filter(|note| !note.trim().is_empty()),
+            duration_millis: None,
+            target_at_millis: Some(target_at_millis),
+            accumulated_millis: 0,
+            run_started_at_millis: None,
             created_at_millis: now,
             last_touched_at_millis: now,
             finished_at_millis: None,
@@ -99,13 +124,25 @@ impl TimerTask {
                 .duration_millis
                 .unwrap_or_default()
                 .saturating_sub(self.elapsed_millis(now)),
+            TimerKind::Alarm if self.status.is_active() => self
+                .target_at_millis
+                .unwrap_or_default()
+                .saturating_sub(now),
+            TimerKind::Alarm => self.accumulated_millis,
         }
     }
 
     pub fn is_due(&self, now: u64) -> bool {
-        self.kind == TimerKind::Countdown
-            && self.status == TimerStatus::Running
-            && self.elapsed_millis(now) >= self.duration_millis.unwrap_or_default()
+        if self.status != TimerStatus::Running {
+            return false;
+        }
+        match self.kind {
+            TimerKind::Stopwatch => false,
+            TimerKind::Countdown => {
+                self.elapsed_millis(now) >= self.duration_millis.unwrap_or_default()
+            }
+            TimerKind::Alarm => now >= self.target_at_millis.unwrap_or_default(),
+        }
     }
 
     pub fn complete(&mut self, now: u64) {
@@ -117,6 +154,9 @@ impl TimerTask {
     }
 
     pub fn pause(&mut self, now: u64) -> Result<(), &'static str> {
+        if self.kind == TimerKind::Alarm {
+            return Err("alarms cannot be paused; cancel the alarm instead");
+        }
         if self.status != TimerStatus::Running {
             return Err("timer is not running");
         }
@@ -128,6 +168,9 @@ impl TimerTask {
     }
 
     pub fn resume(&mut self, now: u64) -> Result<(), &'static str> {
+        if self.kind == TimerKind::Alarm {
+            return Err("alarms cannot be resumed");
+        }
         if self.status != TimerStatus::Paused {
             return Err("timer is not paused");
         }
@@ -149,11 +192,14 @@ impl TimerTask {
         if !self.status.is_active() {
             return Err("timer has already finished");
         }
-        self.accumulated_millis = self.elapsed_millis(now);
+        self.accumulated_millis = match self.kind {
+            TimerKind::Alarm => self.display_millis(now),
+            TimerKind::Stopwatch | TimerKind::Countdown => self.elapsed_millis(now),
+        };
         self.run_started_at_millis = None;
         self.status = match self.kind {
             TimerKind::Stopwatch => TimerStatus::Stopped,
-            TimerKind::Countdown => TimerStatus::Cancelled,
+            TimerKind::Countdown | TimerKind::Alarm => TimerStatus::Cancelled,
         };
         self.finished_at_millis = Some(now);
         self.last_touched_at_millis = now;
@@ -168,6 +214,8 @@ pub struct TimerView {
     pub status: TimerStatus,
     pub note: Option<String>,
     pub value_millis: u64,
+    #[serde(default)]
+    pub target_at_millis: Option<u64>,
 }
 
 impl TimerView {
@@ -178,6 +226,7 @@ impl TimerView {
             status: task.status,
             note: task.note.clone(),
             value_millis: task.display_millis(now),
+            target_at_millis: task.target_at_millis,
         }
     }
 }
@@ -221,5 +270,39 @@ mod tests {
         let mut countdown = TimerTask::new(2, TimerKind::Countdown, Some(5_000), None, 0);
         countdown.stop(1_000).unwrap();
         assert_eq!(countdown.status, TimerStatus::Cancelled);
+    }
+
+    #[test]
+    fn alarm_tracks_an_absolute_deadline_and_cannot_pause() {
+        let mut alarm = TimerTask::new_alarm(3, 10_000, Some("breakfast".to_owned()), 1_000);
+        assert_eq!(alarm.display_millis(4_000), 6_000);
+        assert!(!alarm.is_due(9_999));
+        assert!(alarm.is_due(10_000));
+        assert_eq!(
+            alarm.pause(5_000),
+            Err("alarms cannot be paused; cancel the alarm instead")
+        );
+        alarm.stop(5_000).unwrap();
+        assert_eq!(alarm.status, TimerStatus::Cancelled);
+        assert_eq!(alarm.display_millis(9_000), 5_000);
+    }
+
+    #[test]
+    fn old_state_without_alarm_target_still_deserializes() {
+        let task: TimerTask = serde_json::from_value(serde_json::json!({
+            "id": 1,
+            "kind": "countdown",
+            "status": "running",
+            "note": null,
+            "duration_millis": 60000,
+            "accumulated_millis": 0,
+            "run_started_at_millis": 1000,
+            "created_at_millis": 1000,
+            "last_touched_at_millis": 1000,
+            "finished_at_millis": null
+        }))
+        .unwrap();
+        assert_eq!(task.kind, TimerKind::Countdown);
+        assert_eq!(task.target_at_millis, None);
     }
 }

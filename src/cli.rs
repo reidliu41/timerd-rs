@@ -122,6 +122,43 @@ pub enum Command {
         theme: Option<String>,
     },
 
+    /// Schedule a one-time alarm at a local clock time
+    #[command(name = "at", visible_alias = "alarm")]
+    Alarm {
+        /// Local time: 08:00, 08:00:30, or 2030-10-30 08:00
+        #[arg(value_name = "TIME")]
+        time: String,
+
+        /// A short description shown with the alarm
+        #[arg(short = 'n', long, value_name = "TEXT")]
+        note: Option<String>,
+
+        /// Start detached from the terminal
+        #[arg(short = 'd', long)]
+        detach: bool,
+
+        /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
+        #[arg(
+            short = 's',
+            long,
+            value_enum,
+            value_name = "SIZE",
+            conflicts_with = "detach"
+        )]
+        size: Option<DisplaySize>,
+
+        /// Animated foreground theme; run `timer theme list` to see names
+        #[arg(
+            short = 't',
+            long,
+            value_name = "THEME",
+            value_parser = crate::theme::ThemeNameParser,
+            hide_possible_values = true,
+            conflicts_with = "detach"
+        )]
+        theme: Option<String>,
+    },
+
     /// Attach to the latest detached timer
     #[command(visible_alias = "a")]
     Attach {
@@ -147,7 +184,7 @@ pub enum Command {
     #[command(visible_alias = "ls")]
     List,
 
-    /// Pause a running timer
+    /// Pause a running stopwatch or countdown
     #[command(visible_alias = "p")]
     Pause {
         /// Timer ID; defaults to the latest running timer
@@ -161,7 +198,7 @@ pub enum Command {
         id: Option<u64>,
     },
 
-    /// Stop a stopwatch or cancel a countdown
+    /// Stop a stopwatch or cancel a countdown/alarm
     #[command(visible_alias = "x")]
     Stop {
         /// Timer ID; defaults to the latest active timer
@@ -307,6 +344,21 @@ mod tests {
                 theme: None,
             }) if duration == "5m" && note == "break"
         ));
+
+        let alarm = Cli::try_parse_from(["timer", "at", "08:00", "-n", "breakfast", "-d"]).unwrap();
+        assert!(matches!(
+            alarm.command,
+            Some(Command::Alarm {
+                time,
+                note: Some(note),
+                detach: true,
+                size: None,
+                theme: None,
+            }) if time == "08:00" && note == "breakfast"
+        ));
+
+        let alarm_alias = Cli::try_parse_from(["timer", "alarm", "08:00:30"]).unwrap();
+        assert!(matches!(alarm_alias.command, Some(Command::Alarm { .. })));
 
         let completions = Cli::try_parse_from(["timer", "completions", "fish"]).unwrap();
         assert!(matches!(

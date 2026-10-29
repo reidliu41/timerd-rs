@@ -9,6 +9,8 @@ pub enum Request {
     Create {
         kind: TimerKind,
         duration_millis: Option<u64>,
+        #[serde(default)]
+        target_at_millis: Option<u64>,
         note: Option<String>,
         tty_path: Option<String>,
     },

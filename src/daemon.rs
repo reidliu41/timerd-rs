@@ -15,6 +15,7 @@ use nix::libc;
 use nix::unistd::setsid;
 use serde::{Deserialize, Serialize};
 
+use crate::alarm::format_alarm_clock;
 use crate::model::{TimerKind, TimerStatus, TimerTask, TimerView, now_millis};
 use crate::paths::AppPaths;
 use crate::protocol::{Request, Response};
@@ -308,23 +309,52 @@ fn handle_one_shot_inner(request: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Create {
             kind,
             duration_millis,
+            target_at_millis,
             note,
             tty_path,
         } => {
-            if kind == TimerKind::Countdown && duration_millis.unwrap_or_default() == 0 {
-                bail!("countdown duration must be greater than zero");
-            }
-            if kind == TimerKind::Stopwatch && duration_millis.is_some() {
-                bail!("a stopwatch cannot have a countdown duration");
+            let now = now_millis();
+            match kind {
+                TimerKind::Stopwatch => {
+                    if duration_millis.is_some() || target_at_millis.is_some() {
+                        bail!("a stopwatch cannot have a duration or target time");
+                    }
+                }
+                TimerKind::Countdown => {
+                    if duration_millis.unwrap_or_default() == 0 {
+                        bail!("countdown duration must be greater than zero");
+                    }
+                    if target_at_millis.is_some() {
+                        bail!("a countdown cannot have an alarm target time");
+                    }
+                }
+                TimerKind::Alarm => {
+                    if duration_millis.is_some() {
+                        bail!("an alarm cannot have a countdown duration");
+                    }
+                    if target_at_millis.unwrap_or_default() <= now {
+                        bail!("alarm target time must be in the future");
+                    }
+                }
             }
 
-            let now = now_millis();
             let notify_tty = tty_path.as_deref().and_then(open_notification_tty);
             let terminal_notify = notify_tty.is_some();
             let mut state = state.lock().expect("daemon state lock poisoned");
             let id = state.next_id;
             state.next_id = state.next_id.saturating_add(1);
-            let task = TimerTask::new(id, kind, duration_millis, sanitize_note(note), now);
+            let note = sanitize_note(note);
+            let task = match kind {
+                TimerKind::Alarm => TimerTask::new_alarm(
+                    id,
+                    target_at_millis.expect("validated alarm target must exist"),
+                    note,
+                    now,
+                ),
+                TimerKind::Stopwatch | TimerKind::Countdown => {
+                    TimerTask::new(id, kind, duration_millis, note, now)
+                }
+            };
             let view = TimerView::from_task(&task, now);
             state.tasks.insert(
                 id,
@@ -401,8 +431,10 @@ fn change_task(
             .resolve_active_id(Some(id))
             .map_err(|error| anyhow!(error))?,
         (Change::Pause, None) => state
-            .latest_id(|runtime| runtime.task.status == TimerStatus::Running)
-            .ok_or_else(|| anyhow!("no running timers"))?,
+            .latest_id(|runtime| {
+                runtime.task.status == TimerStatus::Running && runtime.task.kind != TimerKind::Alarm
+            })
+            .ok_or_else(|| anyhow!("no running stopwatch or countdown"))?,
         (Change::Resume, None) => state
             .latest_id(|runtime| runtime.task.status == TimerStatus::Paused)
             .ok_or_else(|| anyhow!("no paused timers"))?,
@@ -538,10 +570,21 @@ fn notify_terminal(runtime: &mut RuntimeTask) {
         .as_deref()
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
-    let message = format!(
-        "\r\n[timer #{}] ✓ countdown finished{}\r\n",
-        runtime.task.id, note
-    );
+    let message = match runtime.task.kind {
+        TimerKind::Alarm => {
+            let target = runtime
+                .task
+                .target_at_millis
+                .map(format_alarm_clock)
+                .unwrap_or_else(|| "scheduled time".to_owned());
+            format!("\r\n[timer #{}] ⏰ {}{}\r\n", runtime.task.id, target, note)
+        }
+        TimerKind::Countdown => format!(
+            "\r\n[timer #{}] ✓ countdown finished{}\r\n",
+            runtime.task.id, note
+        ),
+        TimerKind::Stopwatch => return,
+    };
     if let Some(mut tty) = runtime.notify_tty.take() {
         let _ = tty.write_all(message.as_bytes());
         let _ = tty.flush();
@@ -587,6 +630,7 @@ mod tests {
             Request::Create {
                 kind: TimerKind::Countdown,
                 duration_millis: Some(60_000),
+                target_at_millis: None,
                 note: Some(" tea\n\u{1b}[31m ".to_owned()),
                 tty_path: None,
             },
@@ -716,6 +760,108 @@ mod tests {
             TimerStatus::Done
         );
         assert!(restored.tasks.get(&7).unwrap().notified);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn alarm_lifecycle_is_persisted_and_cannot_pause() {
+        let (state, directory) = test_state();
+        let target = now_millis().saturating_add(60_000);
+        let created = handle_one_shot_inner(
+            Request::Create {
+                kind: TimerKind::Alarm,
+                duration_millis: None,
+                target_at_millis: Some(target),
+                note: Some("breakfast".to_owned()),
+                tty_path: None,
+            },
+            &state,
+        )
+        .unwrap();
+        let Response::Created { task, .. } = created else {
+            panic!("expected created response");
+        };
+        assert_eq!(task.kind, TimerKind::Alarm);
+        assert_eq!(task.target_at_millis, Some(target));
+        assert_eq!(task.note.as_deref(), Some("breakfast"));
+
+        let pause_error = change_task(&state, Some(task.id), Change::Pause).unwrap_err();
+        assert!(pause_error.to_string().contains("alarms cannot be paused"));
+
+        let cancelled = change_task(&state, Some(task.id), Change::Stop).unwrap();
+        assert!(matches!(
+            cancelled,
+            Response::Changed {
+                task: TimerView {
+                    kind: TimerKind::Alarm,
+                    status: TimerStatus::Cancelled,
+                    ..
+                }
+            }
+        ));
+
+        let restored = DaemonState::load(directory.join("state.json")).unwrap();
+        assert_eq!(
+            restored.tasks.get(&task.id).unwrap().task.target_at_millis,
+            Some(target)
+        );
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn alarm_notification_uses_the_target_clock_and_note() {
+        let (_state, directory) = test_state();
+        let notification_path = directory.join("alarm-notification.txt");
+        let target = now_millis().saturating_add(60_000);
+        let mut runtime = RuntimeTask {
+            task: TimerTask::new_alarm(8, target, Some("breakfast".to_owned()), now_millis()),
+            notify_tty: Some(File::create(&notification_path).unwrap()),
+            attached: false,
+            notified: false,
+        };
+        runtime.task.complete(target);
+        notify_terminal(&mut runtime);
+
+        assert_eq!(
+            fs::read_to_string(notification_path).unwrap(),
+            format!(
+                "\r\n[timer #8] ⏰ {} · breakfast\r\n",
+                format_alarm_clock(target)
+            )
+        );
+        assert!(runtime.notified);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn overdue_alarm_is_completed_during_recovery() {
+        let (state, directory) = test_state();
+        let state_path = {
+            let mut state = state.lock().unwrap();
+            let now = now_millis();
+            state.tasks.insert(
+                9,
+                RuntimeTask {
+                    task: TimerTask::new_alarm(
+                        9,
+                        now.saturating_sub(1_000),
+                        None,
+                        now.saturating_sub(5_000),
+                    ),
+                    notify_tty: None,
+                    attached: false,
+                    notified: false,
+                },
+            );
+            state.next_id = 10;
+            state.persist().unwrap();
+            state.state_path.clone()
+        };
+
+        let restored = DaemonState::load(state_path).unwrap();
+        let runtime = restored.tasks.get(&9).unwrap();
+        assert_eq!(runtime.task.status, TimerStatus::Done);
+        assert!(runtime.notified);
         fs::remove_dir_all(directory).unwrap();
     }
 }

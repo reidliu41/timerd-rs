@@ -1,3 +1,4 @@
+mod alarm;
 mod cli;
 mod client;
 mod config;
@@ -14,6 +15,7 @@ use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
 
+use crate::alarm::{format_alarm_target, parse_alarm_target};
 use crate::cli::{Cli, Command, ConfigCommand, ThemeCommand};
 use crate::display::DisplaySize;
 use crate::duration::{format_millis, parse_duration};
@@ -21,6 +23,13 @@ use crate::model::{TimerKind, TimerView};
 use crate::paths::AppPaths;
 use crate::protocol::{Request, Response};
 use crate::theme::{ThemeCatalog, ThemeSession};
+
+struct NewTimer {
+    kind: TimerKind,
+    duration_millis: Option<u64>,
+    target_at_millis: Option<u64>,
+    note: Option<String>,
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -48,9 +57,12 @@ fn run() -> Result<()> {
             let paths = AppPaths::discover()?;
             create_timer(
                 &paths,
-                TimerKind::Stopwatch,
-                None,
-                note,
+                NewTimer {
+                    kind: TimerKind::Stopwatch,
+                    duration_millis: None,
+                    target_at_millis: None,
+                    note,
+                },
                 detach,
                 size,
                 theme,
@@ -69,9 +81,36 @@ fn run() -> Result<()> {
             let paths = AppPaths::discover()?;
             create_timer(
                 &paths,
-                TimerKind::Countdown,
-                Some(duration),
-                note,
+                NewTimer {
+                    kind: TimerKind::Countdown,
+                    duration_millis: Some(duration),
+                    target_at_millis: None,
+                    note,
+                },
+                detach,
+                size,
+                theme,
+            )
+        }
+        Some(Command::Alarm {
+            time,
+            note,
+            detach,
+            size,
+            theme,
+        }) => {
+            let target_at_millis = parse_alarm_target(&time)?;
+            let size = resolve_display_size(size)?;
+            let theme = resolve_theme(theme)?;
+            let paths = AppPaths::discover()?;
+            create_timer(
+                &paths,
+                NewTimer {
+                    kind: TimerKind::Alarm,
+                    duration_millis: None,
+                    target_at_millis: Some(target_at_millis),
+                    note,
+                },
                 detach,
                 size,
                 theme,
@@ -169,9 +208,12 @@ fn run() -> Result<()> {
                 let paths = AppPaths::discover()?;
                 return create_timer(
                     &paths,
-                    TimerKind::Countdown,
-                    Some(duration),
-                    cli.note,
+                    NewTimer {
+                        kind: TimerKind::Countdown,
+                        duration_millis: Some(duration),
+                        target_at_millis: None,
+                        note: cli.note,
+                    },
                     cli.detach,
                     size,
                     theme,
@@ -203,14 +245,23 @@ fn interactive_create(
         }
     };
     let paths = AppPaths::discover()?;
-    create_timer(&paths, kind, duration, note, detach, size, theme)
+    create_timer(
+        &paths,
+        NewTimer {
+            kind,
+            duration_millis: duration,
+            target_at_millis: None,
+            note,
+        },
+        detach,
+        size,
+        theme,
+    )
 }
 
 fn create_timer(
     paths: &AppPaths,
-    kind: TimerKind,
-    duration_millis: Option<u64>,
-    note: Option<String>,
+    timer: NewTimer,
     detach: bool,
     size: DisplaySize,
     theme: Option<ThemeSession>,
@@ -219,9 +270,10 @@ fn create_timer(
     let response = client::expect_response(client::request(
         paths,
         &Request::Create {
-            kind,
-            duration_millis,
-            note,
+            kind: timer.kind,
+            duration_millis: timer.duration_millis,
+            target_at_millis: timer.target_at_millis,
+            note: timer.note,
             tty_path: client::current_tty_path(),
         },
     )?)?;
@@ -235,14 +287,29 @@ fn create_timer(
     };
 
     if detach {
-        let round_up = task.kind == TimerKind::Countdown;
-        println!(
-            "[{}] {} started · {} · detached",
-            task.id,
-            task.kind.as_str(),
-            format_millis(task.value_millis, round_up)
-        );
-        if task.kind == TimerKind::Countdown && !terminal_notify {
+        if task.kind == TimerKind::Alarm {
+            let target = task
+                .target_at_millis
+                .map(format_alarm_target)
+                .unwrap_or_else(|| "unknown time".to_owned());
+            let note = task
+                .note
+                .as_deref()
+                .map(|note| format!(" · {note}"))
+                .unwrap_or_default();
+            println!(
+                "[{}] alarm scheduled · {} · detached{}",
+                task.id, target, note
+            );
+        } else {
+            println!(
+                "[{}] {} started · {} · detached",
+                task.id,
+                task.kind.as_str(),
+                format_millis(task.value_millis, task.kind.counts_down())
+            );
+        }
+        if task.kind.counts_down() && !terminal_notify {
             eprintln!("warning: the current terminal is unavailable for completion messages");
         }
         return Ok(());
@@ -328,14 +395,26 @@ fn list_timers(paths: &AppPaths) -> Result<()> {
         "ID", "TYPE", "STATUS", "TIME"
     );
     for task in tasks {
-        let round_up = task.kind == TimerKind::Countdown && task.status.is_active();
+        let round_up = task.kind.counts_down() && task.status.is_active();
+        let detail = if task.kind == TimerKind::Alarm {
+            let target = task
+                .target_at_millis
+                .map(format_alarm_target)
+                .unwrap_or_else(|| "unknown time".to_owned());
+            match task.note.as_deref() {
+                Some(note) => format!("at {target} · {note}"),
+                None => format!("at {target}"),
+            }
+        } else {
+            task.note.as_deref().unwrap_or("-").to_owned()
+        };
         println!(
             "{:<4} {:<11} {:<10} {:<10} {}",
             task.id,
             task.kind.as_str(),
             task.status.as_str(),
             format_millis(task.value_millis, round_up),
-            task.note.as_deref().unwrap_or("-")
+            detail
         );
     }
     Ok(())
@@ -352,7 +431,7 @@ fn print_changed(response: Response) -> Result<()> {
 }
 
 fn summary(task: &TimerView) -> String {
-    let round_up = task.kind == TimerKind::Countdown && task.status.is_active();
+    let round_up = task.kind.counts_down() && task.status.is_active();
     let note = task
         .note
         .as_deref()
