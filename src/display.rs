@@ -296,6 +296,7 @@ mod tests {
             value_millis: 12_000,
             target_at_millis: None,
             bell: false,
+            created_at_millis: 1_000,
         }
     }
 
@@ -359,6 +360,7 @@ mod tests {
             value_millis: 24 * 60 * 1_000,
             target_at_millis: Some(1_798_000_000_000),
             bell: true,
+            created_at_millis: 1_000,
         };
         let small = render_timer(&alarm, DisplaySize::Small, 120, 40);
         assert!(small.lines[0].contains("⏰"));

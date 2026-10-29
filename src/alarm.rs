@@ -19,6 +19,20 @@ pub fn format_alarm_clock(target_millis: u64) -> String {
     format_target(target_millis, false)
 }
 
+pub fn format_created_at(timestamp_millis: u64) -> String {
+    if timestamp_millis == 0 {
+        return "-".to_owned();
+    }
+    let Ok(timestamp) = i64::try_from(timestamp_millis) else {
+        return "unknown".to_owned();
+    };
+    Local
+        .timestamp_millis_opt(timestamp)
+        .single()
+        .map(|timestamp| timestamp.format("%Y-%m-%d %H:%M:%S").to_string())
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
 fn format_target(target_millis: u64, include_date: bool) -> String {
     let Ok(timestamp) = i64::try_from(target_millis) else {
         return "unknown time".to_owned();

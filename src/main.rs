@@ -10,6 +10,7 @@ mod paths;
 mod protocol;
 mod theme;
 mod ui;
+mod watch;
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser};
@@ -135,6 +136,14 @@ fn run() -> Result<()> {
             let paths = AppPaths::discover()?;
             daemon::ensure_running(&paths)?;
             list_timers(&paths)
+        }
+        Some(Command::Watch) => {
+            let paths = AppPaths::discover()?;
+            daemon::ensure_running(&paths)?;
+            match watch::run(&paths)? {
+                Some(id) => ui::run_foreground(&paths, Some(id), resolve_display_size(None)?, None),
+                None => Ok(()),
+            }
         }
         Some(Command::Pause { id }) => {
             let paths = AppPaths::discover()?;

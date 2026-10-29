@@ -214,6 +214,74 @@ impl TimerTask {
         self.last_touched_at_millis = now;
         Ok(())
     }
+
+    pub fn snooze(&mut self, delay_millis: u64, now: u64) -> Result<(), &'static str> {
+        if !self.status.is_active() {
+            return Err("timer has already finished");
+        }
+        if delay_millis == 0 {
+            return Err("snooze duration must be greater than zero");
+        }
+        match self.kind {
+            TimerKind::Stopwatch => return Err("a stopwatch cannot be snoozed"),
+            TimerKind::Countdown => {
+                let remaining = self
+                    .display_millis(now)
+                    .checked_add(delay_millis)
+                    .ok_or("snooze duration is too large")?;
+                self.set_countdown_remaining(remaining, now);
+            }
+            TimerKind::Alarm => {
+                let target = self
+                    .target_at_millis
+                    .unwrap_or(now)
+                    .checked_add(delay_millis)
+                    .ok_or("snooze duration is too large")?;
+                self.target_at_millis = Some(target);
+                self.last_touched_at_millis = now;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn edit(
+        &mut self,
+        note: Option<String>,
+        schedule_millis: Option<u64>,
+        now: u64,
+    ) -> Result<(), &'static str> {
+        if !self.status.is_active() {
+            return Err("timer has already finished");
+        }
+        match (self.kind, schedule_millis) {
+            (TimerKind::Stopwatch, Some(_)) => {
+                return Err("a stopwatch has no schedule to edit");
+            }
+            (TimerKind::Countdown, Some(0)) => {
+                return Err("countdown duration must be greater than zero");
+            }
+            (TimerKind::Countdown, Some(remaining)) => {
+                self.set_countdown_remaining(remaining, now);
+            }
+            (TimerKind::Alarm, Some(target)) if target <= now => {
+                return Err("alarm target time must be in the future");
+            }
+            (TimerKind::Alarm, Some(target)) => {
+                self.target_at_millis = Some(target);
+            }
+            (_, None) => {}
+        }
+        self.note = note.filter(|note| !note.trim().is_empty());
+        self.last_touched_at_millis = now;
+        Ok(())
+    }
+
+    fn set_countdown_remaining(&mut self, remaining_millis: u64, now: u64) {
+        self.duration_millis = Some(remaining_millis);
+        self.accumulated_millis = 0;
+        self.run_started_at_millis = (self.status == TimerStatus::Running).then_some(now);
+        self.last_touched_at_millis = now;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +295,8 @@ pub struct TimerView {
     pub target_at_millis: Option<u64>,
     #[serde(default)]
     pub bell: bool,
+    #[serde(default)]
+    pub created_at_millis: u64,
 }
 
 impl TimerView {
@@ -239,6 +309,7 @@ impl TimerView {
             value_millis: task.display_millis(now),
             target_at_millis: task.target_at_millis,
             bell: task.bell,
+            created_at_millis: task.created_at_millis,
         }
     }
 }
@@ -317,5 +388,39 @@ mod tests {
         assert_eq!(task.kind, TimerKind::Countdown);
         assert_eq!(task.target_at_millis, None);
         assert!(!task.bell);
+    }
+
+    #[test]
+    fn snooze_delays_countdowns_and_alarms_but_not_stopwatches() {
+        let mut countdown = TimerTask::new(1, TimerKind::Countdown, Some(10_000), None, 1_000);
+        countdown.snooze(5_000, 4_000).unwrap();
+        assert_eq!(countdown.display_millis(4_000), 12_000);
+
+        let mut alarm = TimerTask::new_alarm(2, 10_000, None, 1_000);
+        alarm.snooze(5_000, 4_000).unwrap();
+        assert_eq!(alarm.target_at_millis, Some(15_000));
+
+        let mut stopwatch = TimerTask::new(3, TimerKind::Stopwatch, None, None, 1_000);
+        assert_eq!(
+            stopwatch.snooze(5_000, 4_000),
+            Err("a stopwatch cannot be snoozed")
+        );
+    }
+
+    #[test]
+    fn edit_updates_note_and_kind_specific_schedule() {
+        let mut countdown = TimerTask::new(1, TimerKind::Countdown, Some(10_000), None, 1_000);
+        countdown
+            .edit(Some("coffee".to_owned()), Some(30_000), 4_000)
+            .unwrap();
+        assert_eq!(countdown.note.as_deref(), Some("coffee"));
+        assert_eq!(countdown.display_millis(4_000), 30_000);
+
+        let mut alarm = TimerTask::new_alarm(2, 10_000, None, 1_000);
+        alarm
+            .edit(Some("breakfast".to_owned()), Some(20_000), 4_000)
+            .unwrap();
+        assert_eq!(alarm.note.as_deref(), Some("breakfast"));
+        assert_eq!(alarm.target_at_millis, Some(20_000));
     }
 }

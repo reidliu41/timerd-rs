@@ -289,6 +289,7 @@ Every frequent command has a readable name and a short alias:
 
 ```bash
 timer list             # alias: timer ls
+timer watch            # alias: timer w
 timer pause [ID]       # alias: timer p [ID]; stopwatch/countdown only
 timer resume [ID]      # alias: timer r [ID]
 timer stop [ID]        # alias: timer x [ID]; also cancels an alarm
@@ -297,6 +298,32 @@ timer clear
 
 When an ID is omitted, the daemon selects the most recently used compatible
 timer. `clear` removes finished, stopped, and cancelled records.
+
+`timer watch` opens a live view of every running or paused task. The final
+`CREATED` column is the task creation time in the machine's local timezone:
+
+```text
+   ID   TYPE       STATUS   TIME       TARGET   NOTE          CREATED
+>  12   alarm      running  00:24:37   08:00    eat breakfast 2026-10-29 07:35:23
+   13   countdown  running  00:04:12   08:10    coffee        2026-10-29 08:05:48
+   14   stopwatch  paused   01:32:08   -        coding        2026-10-29 06:37:52
+```
+
+Use the following keys inside the watch view:
+
+| Key | Action |
+| --- | --- |
+| `Up` / `Down` (or `k` / `j`) | Select a task |
+| `Enter` | Leave the watch view and attach to the selected task |
+| `x` | Stop a stopwatch or cancel a countdown/alarm |
+| `s` | Snooze: add a duration to a countdown or delay an alarm |
+| `e` | Edit the note and, when applicable, remaining duration or alarm target |
+| `q`, `Esc`, or `Ctrl-C` | Exit the watch view without stopping tasks |
+
+Snooze accepts the same duration forms as countdown creation, such as `30s`,
+`5m`, or `1h30m`. Editing a countdown replaces its remaining duration; editing
+an alarm accepts the same local clock/date formats as `timer at`. A stopwatch
+has no deadline, so it supports note editing but not snooze.
 
 ## Shell completions
 

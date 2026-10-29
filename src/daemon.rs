@@ -390,6 +390,12 @@ fn handle_one_shot_inner(request: Request, state: &Arc<Mutex<DaemonState>>) -> R
         Request::Resume { id } => change_task(state, id, Change::Resume),
         Request::Toggle { id } => change_task(state, Some(id), Change::Toggle),
         Request::Stop { id } => change_task(state, id, Change::Stop),
+        Request::Snooze { id, delay_millis } => snooze_task(state, id, delay_millis),
+        Request::Edit {
+            id,
+            note,
+            schedule_millis,
+        } => edit_task(state, id, note, schedule_millis),
         Request::Clear => {
             let mut state = state.lock().expect("daemon state lock poisoned");
             let before = state.tasks.len();
@@ -461,6 +467,43 @@ fn change_task(
         runtime.notified = true;
         runtime.notify_tty = None;
     }
+    let view = TimerView::from_task(&runtime.task, now);
+    state.persist()?;
+    Ok(Response::Changed { task: view })
+}
+
+fn snooze_task(state: &Arc<Mutex<DaemonState>>, id: u64, delay_millis: u64) -> Result<Response> {
+    let now = now_millis();
+    let mut state = state.lock().expect("daemon state lock poisoned");
+    let id = state
+        .resolve_active_id(Some(id))
+        .map_err(|error| anyhow!(error))?;
+    let runtime = state.tasks.get_mut(&id).expect("resolved task must exist");
+    runtime
+        .task
+        .snooze(delay_millis, now)
+        .map_err(|error| anyhow!(error))?;
+    let view = TimerView::from_task(&runtime.task, now);
+    state.persist()?;
+    Ok(Response::Changed { task: view })
+}
+
+fn edit_task(
+    state: &Arc<Mutex<DaemonState>>,
+    id: u64,
+    note: Option<String>,
+    schedule_millis: Option<u64>,
+) -> Result<Response> {
+    let now = now_millis();
+    let mut state = state.lock().expect("daemon state lock poisoned");
+    let id = state
+        .resolve_active_id(Some(id))
+        .map_err(|error| anyhow!(error))?;
+    let runtime = state.tasks.get_mut(&id).expect("resolved task must exist");
+    runtime
+        .task
+        .edit(sanitize_note(note), schedule_millis, now)
+        .map_err(|error| anyhow!(error))?;
     let view = TimerView::from_task(&runtime.task, now);
     state.persist()?;
     Ok(Response::Changed { task: view })
@@ -891,6 +934,61 @@ mod tests {
         let runtime = restored.tasks.get(&9).unwrap();
         assert_eq!(runtime.task.status, TimerStatus::Done);
         assert!(runtime.notified);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn watch_snooze_and_edit_commands_are_persisted() {
+        let (state, directory) = test_state();
+        let created = handle_one_shot_inner(
+            Request::Create {
+                kind: TimerKind::Countdown,
+                duration_millis: Some(60_000),
+                target_at_millis: None,
+                bell: false,
+                note: Some("coffee".to_owned()),
+                tty_path: None,
+            },
+            &state,
+        )
+        .unwrap();
+        let Response::Created { task, .. } = created else {
+            panic!("expected created response");
+        };
+        assert!(task.created_at_millis > 0);
+
+        let snoozed = handle_one_shot_inner(
+            Request::Snooze {
+                id: task.id,
+                delay_millis: 30_000,
+            },
+            &state,
+        )
+        .unwrap();
+        let Response::Changed { task } = snoozed else {
+            panic!("expected changed response");
+        };
+        assert!((89_000..=90_000).contains(&task.value_millis));
+
+        let edited = handle_one_shot_inner(
+            Request::Edit {
+                id: task.id,
+                note: Some(" tea\n\u{1b}[31m ".to_owned()),
+                schedule_millis: Some(120_000),
+            },
+            &state,
+        )
+        .unwrap();
+        let Response::Changed { task } = edited else {
+            panic!("expected changed response");
+        };
+        assert_eq!(task.note.as_deref(), Some("tea[31m"));
+        assert_eq!(task.value_millis, 120_000);
+
+        let restored = DaemonState::load(directory.join("state.json")).unwrap();
+        let restored = &restored.tasks.get(&task.id).unwrap().task;
+        assert_eq!(restored.note.as_deref(), Some("tea[31m"));
+        assert_eq!(restored.duration_millis, Some(120_000));
         fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -526,6 +526,7 @@ mod tests {
             value_millis: 12_000,
             target_at_millis: None,
             bell: false,
+            created_at_millis: 1_000,
         };
         let original = render_timer(&view, DisplaySize::Medium, 120, 40).lines;
         let optional = render_with_theme(&view, DisplaySize::Medium, 120, 40, None);
@@ -542,6 +543,7 @@ mod tests {
             value_millis: 0,
             target_at_millis: None,
             bell: true,
+            created_at_millis: 1_000,
         };
         assert!(should_ring_bell(&view));
 

@@ -218,6 +218,10 @@ pub enum Command {
     #[command(visible_alias = "ls")]
     List,
 
+    /// Watch and manage active timers in a live terminal view
+    #[command(visible_alias = "w")]
+    Watch,
+
     /// Pause a running stopwatch or countdown
     #[command(visible_alias = "p")]
     Pause {
@@ -416,6 +420,9 @@ mod tests {
             completions.command,
             Some(Command::Completions { shell: Shell::Fish })
         ));
+
+        let watch = Cli::try_parse_from(["timer", "w"]).unwrap();
+        assert!(matches!(watch.command, Some(Command::Watch)));
     }
 
     #[test]

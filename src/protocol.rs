@@ -32,6 +32,15 @@ pub enum Request {
     Stop {
         id: Option<u64>,
     },
+    Snooze {
+        id: u64,
+        delay_millis: u64,
+    },
+    Edit {
+        id: u64,
+        note: Option<String>,
+        schedule_millis: Option<u64>,
+    },
     Clear,
     Shutdown,
 }
