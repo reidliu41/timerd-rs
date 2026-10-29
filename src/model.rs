@@ -63,6 +63,8 @@ pub struct TimerTask {
     pub duration_millis: Option<u64>,
     #[serde(default)]
     pub target_at_millis: Option<u64>,
+    #[serde(default)]
+    pub bell: bool,
     pub accumulated_millis: u64,
     pub run_started_at_millis: Option<u64>,
     pub created_at_millis: u64,
@@ -85,6 +87,7 @@ impl TimerTask {
             note: note.filter(|note| !note.trim().is_empty()),
             duration_millis,
             target_at_millis: None,
+            bell: false,
             accumulated_millis: 0,
             run_started_at_millis: Some(now),
             created_at_millis: now,
@@ -101,12 +104,18 @@ impl TimerTask {
             note: note.filter(|note| !note.trim().is_empty()),
             duration_millis: None,
             target_at_millis: Some(target_at_millis),
+            bell: false,
             accumulated_millis: 0,
             run_started_at_millis: None,
             created_at_millis: now,
             last_touched_at_millis: now,
             finished_at_millis: None,
         }
+    }
+
+    pub fn with_bell(mut self, bell: bool) -> Self {
+        self.bell = bell;
+        self
     }
 
     pub fn elapsed_millis(&self, now: u64) -> u64 {
@@ -216,6 +225,8 @@ pub struct TimerView {
     pub value_millis: u64,
     #[serde(default)]
     pub target_at_millis: Option<u64>,
+    #[serde(default)]
+    pub bell: bool,
 }
 
 impl TimerView {
@@ -227,6 +238,7 @@ impl TimerView {
             note: task.note.clone(),
             value_millis: task.display_millis(now),
             target_at_millis: task.target_at_millis,
+            bell: task.bell,
         }
     }
 }
@@ -304,5 +316,6 @@ mod tests {
         .unwrap();
         assert_eq!(task.kind, TimerKind::Countdown);
         assert_eq!(task.target_at_millis, None);
+        assert!(!task.bell);
     }
 }

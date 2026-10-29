@@ -310,10 +310,14 @@ fn handle_one_shot_inner(request: Request, state: &Arc<Mutex<DaemonState>>) -> R
             kind,
             duration_millis,
             target_at_millis,
+            bell,
             note,
             tty_path,
         } => {
             let now = now_millis();
+            if bell && !kind.counts_down() {
+                bail!("terminal bell is only supported for countdowns and alarms");
+            }
             match kind {
                 TimerKind::Stopwatch => {
                     if duration_millis.is_some() || target_at_millis.is_some() {
@@ -354,7 +358,8 @@ fn handle_one_shot_inner(request: Request, state: &Arc<Mutex<DaemonState>>) -> R
                 TimerKind::Stopwatch | TimerKind::Countdown => {
                     TimerTask::new(id, kind, duration_millis, note, now)
                 }
-            };
+            }
+            .with_bell(bell);
             let view = TimerView::from_task(&task, now);
             state.tasks.insert(
                 id,
@@ -570,6 +575,7 @@ fn notify_terminal(runtime: &mut RuntimeTask) {
         .as_deref()
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
+    let bell = if runtime.task.bell { "\x07" } else { "" };
     let message = match runtime.task.kind {
         TimerKind::Alarm => {
             let target = runtime
@@ -577,10 +583,13 @@ fn notify_terminal(runtime: &mut RuntimeTask) {
                 .target_at_millis
                 .map(format_alarm_clock)
                 .unwrap_or_else(|| "scheduled time".to_owned());
-            format!("\r\n[timer #{}] ⏰ {}{}\r\n", runtime.task.id, target, note)
+            format!(
+                "{bell}\r\n[timer #{}] ⏰ {}{}\r\n",
+                runtime.task.id, target, note
+            )
         }
         TimerKind::Countdown => format!(
-            "\r\n[timer #{}] ✓ countdown finished{}\r\n",
+            "{bell}\r\n[timer #{}] ✓ countdown finished{}\r\n",
             runtime.task.id, note
         ),
         TimerKind::Stopwatch => return,
@@ -626,11 +635,27 @@ mod tests {
     fn command_lifecycle_is_persisted() {
         let (state, directory) = test_state();
 
+        assert!(
+            handle_one_shot_inner(
+                Request::Create {
+                    kind: TimerKind::Stopwatch,
+                    duration_millis: None,
+                    target_at_millis: None,
+                    bell: true,
+                    note: None,
+                    tty_path: None,
+                },
+                &state,
+            )
+            .is_err()
+        );
+
         let created = handle_one_shot_inner(
             Request::Create {
                 kind: TimerKind::Countdown,
                 duration_millis: Some(60_000),
                 target_at_millis: None,
+                bell: false,
                 note: Some(" tea\n\u{1b}[31m ".to_owned()),
                 tty_path: None,
             },
@@ -772,6 +797,7 @@ mod tests {
                 kind: TimerKind::Alarm,
                 duration_millis: None,
                 target_at_millis: Some(target),
+                bell: true,
                 note: Some("breakfast".to_owned()),
                 tty_path: None,
             },
@@ -784,6 +810,7 @@ mod tests {
         assert_eq!(task.kind, TimerKind::Alarm);
         assert_eq!(task.target_at_millis, Some(target));
         assert_eq!(task.note.as_deref(), Some("breakfast"));
+        assert!(task.bell);
 
         let pause_error = change_task(&state, Some(task.id), Change::Pause).unwrap_err();
         assert!(pause_error.to_string().contains("alarms cannot be paused"));
@@ -805,6 +832,7 @@ mod tests {
             restored.tasks.get(&task.id).unwrap().task.target_at_millis,
             Some(target)
         );
+        assert!(restored.tasks.get(&task.id).unwrap().task.bell);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -814,7 +842,8 @@ mod tests {
         let notification_path = directory.join("alarm-notification.txt");
         let target = now_millis().saturating_add(60_000);
         let mut runtime = RuntimeTask {
-            task: TimerTask::new_alarm(8, target, Some("breakfast".to_owned()), now_millis()),
+            task: TimerTask::new_alarm(8, target, Some("breakfast".to_owned()), now_millis())
+                .with_bell(true),
             notify_tty: Some(File::create(&notification_path).unwrap()),
             attached: false,
             notified: false,
@@ -825,7 +854,7 @@ mod tests {
         assert_eq!(
             fs::read_to_string(notification_path).unwrap(),
             format!(
-                "\r\n[timer #8] ⏰ {} · breakfast\r\n",
+                "\x07\r\n[timer #8] ⏰ {} · breakfast\r\n",
                 format_alarm_clock(target)
             )
         );

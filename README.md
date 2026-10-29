@@ -91,6 +91,55 @@ They can be detached, attached, listed, or cancelled like other timers. This
 release schedules one occurrence only; it does not create a daily repeating
 alarm.
 
+## Terminal bell
+
+Add `-b`/`--bell` to a countdown or alarm to ring the terminal bell when it
+finishes:
+
+```bash
+timer 15s -b
+timer countdown 5m --bell -d
+timer at 08:00 -n "eat breakfast" -b -d
+```
+
+Use `--no-bell` to explicitly disable it. There is no `-nb` spelling because
+short options are single characters and `-n` already means `--note`. Bell is
+disabled by default, so `--no-bell` is mainly useful for explicit scripts and
+future configuration overrides.
+
+The bell is the standard terminal `BEL` control character (`0x07`). It has no
+server-side audio or library dependency: over SSH, the byte travels through the
+session and the local terminal emulator decides whether to play a sound, flash,
+show a tab indicator, or ignore it. A foreground timer rings once before its
+completion line; a detached timer sends the bell with its completion message to
+the terminal that created it. Closing that SSH session still makes delivery
+impossible, just like the ordinary completion message.
+
+### iTerm2 setup
+
+The server cannot override the local iTerm2 profile. To hear or see the bell:
+
+1. Open **iTerm2 > Settings > Profiles > Terminal** for the profile used by
+   the SSH session.
+2. Under **Bell**, clear **Silence bell**. Leaving it selected suppresses the
+   sound even when timerd successfully sends `BEL`.
+3. Choose a **Bell sound** if desired. **Flash visual bell** and **Show bell
+   icon in tabs** are optional visual alternatives.
+4. To request a macOS banner, enable **Notification Center alerts**, open
+   **Filter Alerts**, and enable **Send "Bell" alert**. macOS must also allow
+   notifications for iTerm2 in System Settings.
+
+Test the same SSH session before relying on a timer:
+
+```bash
+printf '\a'
+(sleep 3; printf '\aBell test\n') &
+```
+
+If neither test produces the configured sound, flash, icon, or alert, timerd
+cannot force that terminal to show one. Stopwatch does not accept `--bell`,
+because it has no natural completion point.
+
 Choose one of four fixed foreground display sizes:
 
 ```bash

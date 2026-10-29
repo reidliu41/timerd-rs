@@ -11,6 +11,8 @@ pub enum Request {
         duration_millis: Option<u64>,
         #[serde(default)]
         target_at_millis: Option<u64>,
+        #[serde(default)]
+        bell: bool,
         note: Option<String>,
         tty_path: Option<String>,
     },

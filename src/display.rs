@@ -140,19 +140,20 @@ pub fn compact_line(view: &TimerView) -> String {
     } else {
         ""
     };
+    let bell = if view.bell { " · bell" } else { "" };
     if view.kind == TimerKind::Alarm {
         let target = view
             .target_at_millis
             .map(format_alarm_clock)
             .unwrap_or_else(|| "unknown time".to_owned());
         format!(
-            "{symbol} {}  [#{}]  at {target}{note}",
+            "{symbol} {}  [#{}]  at {target}{note}{bell}",
             format_millis(view.value_millis, round_up),
             view.id
         )
     } else {
         format!(
-            "{symbol} {}{note}{paused}  [#{}]",
+            "{symbol} {}{note}{paused}{bell}  [#{}]",
             format_millis(view.value_millis, round_up),
             view.id
         )
@@ -177,19 +178,20 @@ fn metadata_line(view: &TimerView) -> String {
         .as_deref()
         .map(|note| format!(" · {note}"))
         .unwrap_or_default();
+    let bell = if view.bell { " · bell" } else { "" };
     if view.kind == TimerKind::Alarm {
         let target = view
             .target_at_millis
             .map(format_alarm_clock)
             .unwrap_or_else(|| "unknown time".to_owned());
         format!(
-            "alarm #{} · at {target} · {}{note}",
+            "alarm #{} · at {target} · {}{note}{bell}",
             view.id,
             view.status.as_str()
         )
     } else {
         format!(
-            "{} #{} · {}{note}",
+            "{} #{} · {}{note}{bell}",
             view.kind.as_str(),
             view.id,
             view.status.as_str()
@@ -293,6 +295,7 @@ mod tests {
             note: None,
             value_millis: 12_000,
             target_at_millis: None,
+            bell: false,
         }
     }
 
@@ -355,11 +358,13 @@ mod tests {
             note: Some("breakfast".to_owned()),
             value_millis: 24 * 60 * 1_000,
             target_at_millis: Some(1_798_000_000_000),
+            bell: true,
         };
         let small = render_timer(&alarm, DisplaySize::Small, 120, 40);
         assert!(small.lines[0].contains("⏰"));
         assert!(small.lines[0].contains("at "));
         assert!(small.lines[0].contains("breakfast"));
+        assert!(small.lines[0].contains("bell"));
 
         let medium = render_timer(&alarm, DisplaySize::Medium, 120, 40);
         assert!(medium.lines.iter().any(|line| line.contains("alarm #12")));

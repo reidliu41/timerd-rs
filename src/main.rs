@@ -29,6 +29,7 @@ struct NewTimer {
     duration_millis: Option<u64>,
     target_at_millis: Option<u64>,
     note: Option<String>,
+    bell: bool,
 }
 
 fn main() {
@@ -62,6 +63,7 @@ fn run() -> Result<()> {
                     duration_millis: None,
                     target_at_millis: None,
                     note,
+                    bell: false,
                 },
                 detach,
                 size,
@@ -72,6 +74,8 @@ fn run() -> Result<()> {
             duration,
             note,
             detach,
+            bell,
+            no_bell,
             size,
             theme,
         }) => {
@@ -86,6 +90,7 @@ fn run() -> Result<()> {
                     duration_millis: Some(duration),
                     target_at_millis: None,
                     note,
+                    bell: resolve_bell(bell, no_bell),
                 },
                 detach,
                 size,
@@ -96,6 +101,8 @@ fn run() -> Result<()> {
             time,
             note,
             detach,
+            bell,
+            no_bell,
             size,
             theme,
         }) => {
@@ -110,6 +117,7 @@ fn run() -> Result<()> {
                     duration_millis: None,
                     target_at_millis: Some(target_at_millis),
                     note,
+                    bell: resolve_bell(bell, no_bell),
                 },
                 detach,
                 size,
@@ -213,13 +221,20 @@ fn run() -> Result<()> {
                         duration_millis: Some(duration),
                         target_at_millis: None,
                         note: cli.note,
+                        bell: resolve_bell(cli.bell, cli.no_bell),
                     },
                     cli.detach,
                     size,
                     theme,
                 );
             }
-            interactive_create(cli.note, cli.detach, size, theme)
+            interactive_create(
+                cli.note,
+                cli.detach,
+                resolve_bell(cli.bell, cli.no_bell),
+                size,
+                theme,
+            )
         }
     }
 }
@@ -227,10 +242,14 @@ fn run() -> Result<()> {
 fn interactive_create(
     note: Option<String>,
     detach: bool,
+    bell: bool,
     size: DisplaySize,
     theme: Option<ThemeSession>,
 ) -> Result<()> {
     let kind = ui::choose_timer_kind()?;
+    if bell && kind == TimerKind::Stopwatch {
+        bail!("--bell is only supported for countdowns and alarms");
+    }
     let duration = if kind == TimerKind::Countdown {
         let input = ui::prompt("Duration [s/m/h] (e.g. 15s, 5m, 1h30m, 00:15:00): ")?;
         Some(parse_duration(&input)?)
@@ -252,6 +271,7 @@ fn interactive_create(
             duration_millis: duration,
             target_at_millis: None,
             note,
+            bell,
         },
         detach,
         size,
@@ -274,6 +294,7 @@ fn create_timer(
             duration_millis: timer.duration_millis,
             target_at_millis: timer.target_at_millis,
             note: timer.note,
+            bell: timer.bell,
             tty_path: client::current_tty_path(),
         },
     )?)?;
@@ -287,6 +308,7 @@ fn create_timer(
     };
 
     if detach {
+        let bell = if task.bell { " · bell" } else { "" };
         if task.kind == TimerKind::Alarm {
             let target = task
                 .target_at_millis
@@ -298,12 +320,12 @@ fn create_timer(
                 .map(|note| format!(" · {note}"))
                 .unwrap_or_default();
             println!(
-                "[{}] alarm scheduled · {} · detached{}",
+                "[{}] alarm scheduled · {} · detached{bell}{}",
                 task.id, target, note
             );
         } else {
             println!(
-                "[{}] {} started · {} · detached",
+                "[{}] {} started · {} · detached{bell}",
                 task.id,
                 task.kind.as_str(),
                 format_millis(task.value_millis, task.kind.counts_down())
@@ -323,6 +345,10 @@ fn resolve_display_size(override_size: Option<DisplaySize>) -> Result<DisplaySiz
         Some(size) => Ok(size),
         None => Ok(config::load()?.display_size),
     }
+}
+
+fn resolve_bell(bell: bool, no_bell: bool) -> bool {
+    bell && !no_bell
 }
 
 fn resolve_theme(name: Option<String>) -> Result<Option<ThemeSession>> {
@@ -396,7 +422,7 @@ fn list_timers(paths: &AppPaths) -> Result<()> {
     );
     for task in tasks {
         let round_up = task.kind.counts_down() && task.status.is_active();
-        let detail = if task.kind == TimerKind::Alarm {
+        let mut detail = if task.kind == TimerKind::Alarm {
             let target = task
                 .target_at_millis
                 .map(format_alarm_target)
@@ -408,6 +434,13 @@ fn list_timers(paths: &AppPaths) -> Result<()> {
         } else {
             task.note.as_deref().unwrap_or("-").to_owned()
         };
+        if task.bell {
+            detail = if detail == "-" {
+                "bell".to_owned()
+            } else {
+                format!("{detail} · bell")
+            };
+        }
         println!(
             "{:<4} {:<11} {:<10} {:<10} {}",
             task.id,

@@ -126,6 +126,7 @@ pub fn run_foreground(
     let mut last_render = Vec::new();
     let mut prefix = false;
     let mut final_started = None;
+    let mut bell_rung = false;
 
     loop {
         let (terminal_width, terminal_height) = terminal::size().unwrap_or((80, 24));
@@ -142,6 +143,10 @@ pub fn run_foreground(
         }
 
         if view.status.is_final() {
+            if should_ring_bell(&view) && !bell_rung {
+                ring_terminal_bell()?;
+                bell_rung = true;
+            }
             let started = final_started.get_or_insert_with(Instant::now);
             let hold = theme
                 .as_ref()
@@ -360,6 +365,17 @@ fn send_change(paths: &AppPaths, request: Request) -> Result<()> {
     }
 }
 
+fn should_ring_bell(view: &TimerView) -> bool {
+    view.bell && view.kind.counts_down() && view.status == TimerStatus::Done
+}
+
+fn ring_terminal_bell() -> Result<()> {
+    let mut stdout = io::stdout();
+    write!(stdout, "\x07")?;
+    stdout.flush()?;
+    Ok(())
+}
+
 fn final_line(view: &TimerView) -> String {
     let note = view
         .note
@@ -509,9 +525,32 @@ mod tests {
             note: None,
             value_millis: 12_000,
             target_at_millis: None,
+            bell: false,
         };
         let original = render_timer(&view, DisplaySize::Medium, 120, 40).lines;
         let optional = render_with_theme(&view, DisplaySize::Medium, 120, 40, None);
         assert_eq!(optional, original);
+    }
+
+    #[test]
+    fn bell_only_rings_for_natural_countdown_or_alarm_completion() {
+        let mut view = TimerView {
+            id: 12,
+            kind: TimerKind::Countdown,
+            status: TimerStatus::Done,
+            note: None,
+            value_millis: 0,
+            target_at_millis: None,
+            bell: true,
+        };
+        assert!(should_ring_bell(&view));
+
+        view.status = TimerStatus::Cancelled;
+        assert!(!should_ring_bell(&view));
+        view.status = TimerStatus::Done;
+        view.kind = TimerKind::Stopwatch;
+        assert!(!should_ring_bell(&view));
+        view.kind = TimerKind::Alarm;
+        assert!(should_ring_bell(&view));
     }
 }

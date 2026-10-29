@@ -5,12 +5,22 @@ use clap_complete::Shell;
 
 use crate::display::DisplaySize;
 
+const BELL_NOTE: &str = r#"NOTE:
+  Bell is disabled by default. Use -b/--bell to send the standard terminal
+  BEL character (0x07) when a countdown or alarm completes. Over SSH, the
+  local terminal decides whether to play a sound, flash, show an indicator,
+  or ignore it. Test support with: printf '\a'
+
+  In iTerm2, disable "Silence bell" to hear a sound. Use --no-bell to
+  explicitly keep the bell disabled."#;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "timer",
     version,
     about = "A small foreground/background terminal timer",
-    args_conflicts_with_subcommands = true
+    args_conflicts_with_subcommands = true,
+    after_help = BELL_NOTE
 )]
 pub struct Cli {
     /// Countdown duration: 15, 15s, 5m, 1h30m, or 00:15:00
@@ -24,6 +34,14 @@ pub struct Cli {
     /// Start detached from the terminal
     #[arg(short = 'd', long)]
     pub detach: bool,
+
+    /// Ring the terminal bell when the countdown finishes
+    #[arg(short = 'b', long, conflicts_with = "no_bell")]
+    pub bell: bool,
+
+    /// Explicitly disable the terminal bell
+    #[arg(long = "no-bell", conflicts_with = "bell")]
+    pub no_bell: bool,
 
     /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
     #[arg(
@@ -86,7 +104,7 @@ pub enum Command {
     },
 
     /// Start a countdown
-    #[command(visible_alias = "cd")]
+    #[command(visible_alias = "cd", after_help = BELL_NOTE)]
     Countdown {
         /// Countdown duration
         #[arg(value_name = "DURATION")]
@@ -99,6 +117,14 @@ pub enum Command {
         /// Start detached from the terminal
         #[arg(short = 'd', long)]
         detach: bool,
+
+        /// Ring the terminal bell when the countdown finishes
+        #[arg(short = 'b', long, conflicts_with = "no_bell")]
+        bell: bool,
+
+        /// Explicitly disable the terminal bell
+        #[arg(long = "no-bell", conflicts_with = "bell")]
+        no_bell: bool,
 
         /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
         #[arg(
@@ -123,7 +149,7 @@ pub enum Command {
     },
 
     /// Schedule a one-time alarm at a local clock time
-    #[command(name = "at", visible_alias = "alarm")]
+    #[command(name = "at", visible_alias = "alarm", after_help = BELL_NOTE)]
     Alarm {
         /// Local time: 08:00, 08:00:30, or 2030-10-30 08:00
         #[arg(value_name = "TIME")]
@@ -136,6 +162,14 @@ pub enum Command {
         /// Start detached from the terminal
         #[arg(short = 'd', long)]
         detach: bool,
+
+        /// Ring the terminal bell when the alarm fires
+        #[arg(short = 'b', long, conflicts_with = "no_bell")]
+        bell: bool,
+
+        /// Explicitly disable the terminal bell
+        #[arg(long = "no-bell", conflicts_with = "bell")]
+        no_bell: bool,
 
         /// Foreground size: small (s/1), medium (m/2), large (l/3), or xlarge (xl/4)
         #[arg(
@@ -294,9 +328,11 @@ mod tests {
 
     #[test]
     fn parses_direct_countdown() {
-        let cli = Cli::try_parse_from(["timer", "15m", "-d", "-n", "tea"]).unwrap();
+        let cli = Cli::try_parse_from(["timer", "15m", "-d", "-b", "-n", "tea"]).unwrap();
         assert_eq!(cli.duration.as_deref(), Some("15m"));
         assert!(cli.detach);
+        assert!(cli.bell);
+        assert!(!cli.no_bell);
         assert_eq!(cli.note.as_deref(), Some("tea"));
         assert_eq!(cli.size, None);
         assert_eq!(cli.theme, None);
@@ -340,18 +376,23 @@ mod tests {
                 duration,
                 note: Some(note),
                 detach: false,
+                bell: false,
+                no_bell: false,
                 size: Some(DisplaySize::Large),
                 theme: None,
             }) if duration == "5m" && note == "break"
         ));
 
-        let alarm = Cli::try_parse_from(["timer", "at", "08:00", "-n", "breakfast", "-d"]).unwrap();
+        let alarm =
+            Cli::try_parse_from(["timer", "at", "08:00", "-n", "breakfast", "-d", "-b"]).unwrap();
         assert!(matches!(
             alarm.command,
             Some(Command::Alarm {
                 time,
                 note: Some(note),
                 detach: true,
+                bell: true,
+                no_bell: false,
                 size: None,
                 theme: None,
             }) if time == "08:00" && note == "breakfast"
@@ -359,6 +400,16 @@ mod tests {
 
         let alarm_alias = Cli::try_parse_from(["timer", "alarm", "08:00:30"]).unwrap();
         assert!(matches!(alarm_alias.command, Some(Command::Alarm { .. })));
+
+        let no_bell = Cli::try_parse_from(["timer", "at", "08:00", "--no-bell"]).unwrap();
+        assert!(matches!(
+            no_bell.command,
+            Some(Command::Alarm {
+                bell: false,
+                no_bell: true,
+                ..
+            })
+        ));
 
         let completions = Cli::try_parse_from(["timer", "completions", "fish"]).unwrap();
         assert!(matches!(
@@ -424,6 +475,8 @@ mod tests {
 
         assert!(Cli::try_parse_from(["timer", "sw", "--detach", "--size", "large"]).is_err());
         assert!(Cli::try_parse_from(["timer", "sw", "--detach", "--theme", "sleepy-cat"]).is_err());
+        assert!(Cli::try_parse_from(["timer", "sw", "--bell"]).is_err());
+        assert!(Cli::try_parse_from(["timer", "15m", "--bell", "--no-bell"]).is_err());
     }
 
     #[test]
@@ -435,5 +488,21 @@ mod tests {
         assert!(help.contains("timer completions fish > ~/.config/fish/completions/timer.fish"));
         assert!(help.contains("source <(timer completions bash)"));
         assert!(help.contains("source <(timer completions zsh)"));
+    }
+
+    #[test]
+    fn bell_help_explains_terminal_support_and_usage() {
+        for arguments in [
+            vec!["timer", "--help"],
+            vec!["timer", "countdown", "--help"],
+            vec!["timer", "at", "--help"],
+        ] {
+            let help = Cli::try_parse_from(arguments).unwrap_err().to_string();
+            assert!(help.contains("NOTE:"));
+            assert!(help.contains("-b/--bell"));
+            assert!(help.contains("printf '\\a'"));
+            assert!(help.contains("Silence bell"));
+            assert!(help.contains("--no-bell"));
+        }
     }
 }
